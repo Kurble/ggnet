@@ -34,27 +34,3 @@ pub trait Reflect<V: Visitor>: Default {
 pub trait Visitor: Sized {
     fn visit<T: Reflect<Self>>(&mut self, name: &str, val: &mut T);
 }
-
-#[cfg(test)]
-mod tests {
-    use printer::Printer;
-    use super::*;
-
-    #[derive(Default, Reflect)]
-    struct Test {
-        a: u32,
-        b: u32,
-        c: Vec<String>,
-    }
-
-    #[test]
-    fn test_node_derive() {
-        let mut t = Test { a: 1, b: 2, c: vec![String::from("hello"), String::from("world")] };
-
-        let mut p = Printer { result: String::from(""), indent: String::from("") };
-
-        p.visit("test", &mut t);
-
-        println!("{}", p.result);
-    }
-}
