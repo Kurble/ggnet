@@ -8,16 +8,17 @@ pub struct Deserializer<R: Read, T: Tag> {
 }
 
 impl<R: Read, G: Tag> Visitor for Deserializer<R, G> {
-    fn visit<T: Reflect<Deserializer<R, G>>>(&mut self, _name: &str, val: &mut T) {
-        val.reflect(self);
+    fn visit<T: Reflect<Deserializer<R, G>>>(&mut self, _name: &str, val: &mut T) -> Result<(), SerializeError> {
+        Ok(val.reflect(self)?)
     }
 }
 
 macro_rules! encodable {
     ($t:ty) => (
         impl<R: Read, T: Tag> Reflect<Deserializer<R, T>> for $t {
-            fn reflect(&mut self, visit: &mut Deserializer<R, T>) {
-                *self = decode(&mut visit.reader).unwrap();
+            fn reflect(&mut self, visit: &mut Deserializer<R, T>) -> Result<(), SerializeError> {
+                *self = decode(&mut visit.reader)?;
+                Ok(())
             }
         }
     )
@@ -41,14 +42,15 @@ impl<R, T, G> Reflect<Deserializer<R, G>> for Vec<T> where
     T: Reflect<Deserializer<R, G>>,
     G: Tag,
 {
-    fn reflect(&mut self, visit: &mut Deserializer<R, G>) {
+    fn reflect(&mut self, visit: &mut Deserializer<R, G>) -> Result<(), SerializeError> {
         let mut len = 0u32;
-        len.reflect(visit);
+        len.reflect(visit)?;
         self.clear();
         for _ in 0..len {
             self.push(T::default());
-            self.last_mut().unwrap().reflect(visit);
+            self.last_mut().unwrap().reflect(visit)?;
         }
+        Ok(())
     }
 }
 
@@ -58,18 +60,19 @@ impl<R, T, K, V> Reflect<Deserializer<R, T>> for HashMap<K, V> where
     K: Reflect<Deserializer<R, T>> + Eq + Hash + Clone,
     V: Reflect<Deserializer<R, T>>,
 {
-    fn reflect(&mut self, visit: &mut Deserializer<R, T>) {
+    fn reflect(&mut self, visit: &mut Deserializer<R, T>) -> Result<(), SerializeError> {
         let mut len = 0u32;
-        len.reflect(visit);
+        len.reflect(visit)?;
         self.clear();
         for _ in 0..len {
             let mut k = K::default();
             let mut v = V::default();
 
-            k.reflect(visit);
-            v.reflect(visit);
+            k.reflect(visit)?;
+            v.reflect(visit)?;
 
             self.insert(k, v);
         }
+        Ok(())
     }
 }

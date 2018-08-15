@@ -64,9 +64,9 @@ impl<T: CallUpdate + CallRPC + Default + Any, G: Tag> Default for Node<T, G> {
 }
 
 impl<V: Visitor, T: CallUpdate + CallRPC + Reflect<V> + Any, G: Tag> Reflect<V> for Node<T, G> {
-    fn reflect(&mut self, visitor: &mut V) {
+    fn reflect(&mut self, visitor: &mut V) -> Result<(), SerializeError> {
         let mut lk = self.inner.lock().unwrap();
-        lk.val.reflect(visitor);
+        Ok(lk.val.reflect(visitor)?)
     }
 }
 
@@ -107,7 +107,7 @@ impl<T: CallUpdate + CallRPC + Default + Any, G: 'static + Tag> NodeBase<G> for 
         }
     }
 
-    fn recv_rpc<'a>(&mut self, mut msg: Deserializer<Cursor<Vec<u8>>, TagServer>) {
+    fn recv_rpc<'a>(&mut self, msg: Deserializer<Cursor<Vec<u8>>, TagServer>) {
         self.inner.lock().unwrap().val.call_rpc(msg);
     }
 

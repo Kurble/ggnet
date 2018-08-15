@@ -1,3 +1,5 @@
+#![recursion_limit="128"]
+
 extern crate proc_macro;
 extern crate syn;
 #[macro_use]
@@ -38,8 +40,9 @@ fn impl_reflect_struct(ast: &syn::DeriveInput) -> quote::Tokens {
         impl<V: Visitor> Reflect<V> for #name where
             #(#field_ty: Reflect<V>,)*
         {
-            fn reflect(&mut self, visitor: &mut V) {
-                #(visitor.visit(stringify!(#field_str), &mut self.#field_id);)*
+            fn reflect(&mut self, visitor: &mut V) -> Result<(), SerializeError> {
+                #(visitor.visit(stringify!(#field_str), &mut self.#field_id)?;)*
+                Ok(())
             }
         }        
     }
@@ -82,15 +85,16 @@ fn impl_reflect_enum(ast: &syn::DeriveInput) -> quote::Tokens {
         impl<V: Visitor> Reflect<V> for #name where
             u8: Reflect<V>,
         {
-            fn reflect(&mut self, visitor: &mut V) {
+            fn reflect(&mut self, visitor: &mut V) -> Result<(), SerializeError> {
                 let mut val: u8 = match self {
                     #(&mut #encode_variants => #encode_indices,)*
                 };
-                val.reflect(visitor);
+                val.reflect(visitor)?;
                 *self = match val {
                     #(#decode_indices => #decode_variants,)*
                     _ => panic!(format!("invalid enum {0} for {1}", val, #ty_name)),
                 };
+                Ok(())
             }
         }
     }

@@ -279,9 +279,9 @@ impl<T> CallUpdate for T where
 }
 
 impl<V: Visitor> Visitor for Updater<V> {
-    fn visit<T: Reflect<Updater<V>>>(&mut self, name: &str, val: &mut T) {
+    fn visit<T: Reflect<Updater<V>>>(&mut self, name: &str, val: &mut T) -> Result<(), SerializeError> {
         if self.nest > 0 {
-            val.reflect(self);
+            val.reflect(self)?;
         } else if name == self.tag {
             if self.found > 0 {
                 panic!("duplicate tag found");
@@ -289,20 +289,21 @@ impl<V: Visitor> Visitor for Updater<V> {
                 self.found += 1;
                 self.nest += 1;
 
-                val.reflect(self);
+                val.reflect(self)?;
 
                 self.nest -= 1;
             }
         }
+        Ok(())
     }
 }
 
 macro_rules! encodable {
     ($t:ty) => (
         impl<V: Visitor> Reflect<Updater<V>> for $t where $t: Reflect<V> {
-            fn reflect(&mut self, visit: &mut Updater<V>) {
+            fn reflect(&mut self, visit: &mut Updater<V>) -> Result<(), SerializeError> {
                 assert!(visit.op == UpdateOp::Update);
-                self.reflect(&mut visit.ser);
+                Ok(self.reflect(&mut visit.ser)?)
             }
         }
     )
@@ -331,15 +332,15 @@ impl<V, T> Reflect<Updater<V>> for Vec<T> where
     Vec<T>: Reflect<V>,
     u32: Reflect<V>,
 {
-    fn reflect(&mut self, visit: &mut Updater<V>) {
+    fn reflect(&mut self, visit: &mut Updater<V>) -> Result<(), SerializeError> {
         match visit.op {
             UpdateOp::Update => {
-                self.reflect(&mut visit.ser);
+                self.reflect(&mut visit.ser)?;
             },
             UpdateOp::VecPush => {
                 let mut value: T = acquire(visit.val.take());
                 
-                value.reflect(&mut visit.ser);
+                value.reflect(&mut visit.ser)?;
 
                 self.push(value);
             },
@@ -347,15 +348,15 @@ impl<V, T> Reflect<Updater<V>> for Vec<T> where
                 let mut index: u32 = acquire(visit.key.take());
                 let mut value: T = acquire(visit.val.take());
 
-                index.reflect(&mut visit.ser);
-                value.reflect(&mut visit.ser);
+                index.reflect(&mut visit.ser)?;
+                value.reflect(&mut visit.ser)?;
 
                 self.insert(index as usize, value);
             },
             UpdateOp::VecRemove => {
                 let mut index: u32 = acquire(visit.key.take());
                 
-                index.reflect(&mut visit.ser);
+                index.reflect(&mut visit.ser)?;
                 
                 self.remove(index as usize);
             },
@@ -366,6 +367,7 @@ impl<V, T> Reflect<Updater<V>> for Vec<T> where
                 unimplemented!();
             },
         }
+        Ok(())
     }
 }
 
@@ -376,24 +378,24 @@ impl<U, K, V> Reflect<Updater<U>> for HashMap<K, V> where
     V: Reflect<U> + Any + 'static,
     HashMap<K, V>: Reflect<U>,
 {
-    fn reflect(&mut self, visit: &mut Updater<U>) {
+    fn reflect(&mut self, visit: &mut Updater<U>) -> Result<(), SerializeError> {
         match visit.op {
             UpdateOp::Update => {
-                self.reflect(&mut visit.ser);
+                self.reflect(&mut visit.ser)?;
             },
             UpdateOp::MapInsert => {
                 let mut index: K = acquire(visit.key.take());
                 let mut value: V = acquire(visit.val.take());
 
-                index.reflect(&mut visit.ser);
-                value.reflect(&mut visit.ser);
+                index.reflect(&mut visit.ser)?;
+                value.reflect(&mut visit.ser)?;
 
                 self.insert(index, value);
             },
             UpdateOp::MapRemove => {
                 let mut index: K = acquire(visit.key.take());
                 
-                index.reflect(&mut visit.ser);
+                index.reflect(&mut visit.ser)?;
                 
                 self.remove(&index);
             },
@@ -404,5 +406,6 @@ impl<U, K, V> Reflect<Updater<U>> for HashMap<K, V> where
                 unimplemented!();
             },
         }
+        Ok(())
     }
 }

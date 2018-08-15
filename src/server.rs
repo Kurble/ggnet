@@ -64,6 +64,8 @@ impl Server {
 	}
 
 	pub fn update(&mut self) {
+		self.clients.retain(|c| c.conn.is_alive());
+
 		for c in self.clients.iter_mut() {
 			c.update(&mut self.nodes);
 		}
