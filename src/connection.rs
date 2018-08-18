@@ -3,6 +3,7 @@ use std::cmp::Ordering;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::atomic::{AtomicBool,Ordering as AtomicOrdering};
 use std::thread;
+use std::hash::{Hash, Hasher};
 
 pub const PACKET_MAGIC: u32 = 0x12345678;
 
@@ -44,6 +45,12 @@ impl PartialOrd for Connection {
     }
 }
 
+impl Hash for Connection {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
 impl Clone for Connection {
     fn clone(&self) -> Self {
         Connection {
@@ -54,16 +61,6 @@ impl Clone for Connection {
     }
 }
 
-impl<T: Tag> NodeContext<T> for () {
-    fn get(&self, _: u32) -> Option<Box<NodeBase<T>>> {
-        unimplemented!();
-    }
-
-    fn insert(&mut self, _: u32, _: Box<NodeBase<T>>) {
-        unimplemented!();
-    }
-}
-
 impl Connection {
     pub fn new<W: 'static +  Write, R: 'static +  Read + Send>(w: W, r: R, id: usize) -> Self {
         let (sender, receiver) = channel();
@@ -71,14 +68,14 @@ impl Connection {
         let alive = Arc::new(AtomicBool::new(true));
 
         let result = Connection{
-            inner: Arc::new(Mutex::new(Conn { w: Serializer { writer: Box::new(w) }, r: receiver })),
+            inner: Arc::new(Mutex::new(Conn { w: Serializer::new(Box::new(w)), r: receiver })),
             alive: alive.clone(),
             id
         };
 
         thread::spawn(move || {
-            let mut de = Deserializer::<R, TagAgnostic>{ reader: r, context: Box::new(()) };
-            loop {
+            let mut de = Deserializer::new(r);
+            while alive.load(AtomicOrdering::Relaxed) {
                 let mut packet = Packet::default();
                 let result = packet.reflect(&mut de);
                 if result.is_err() {
@@ -102,15 +99,21 @@ impl Connection {
         self.alive.load(AtomicOrdering::Relaxed)
     }
 
-    pub fn send(&self, mut node: u32, data: &[u8]) -> Result<(), SerializeError> {
+    pub fn send(&self, mut node: u32, data: &[u8]) {
         let mut conn = self.inner.lock().unwrap();
 
-        node.reflect(&mut conn.w)?;
-        PACKET_MAGIC.reflect(&mut conn.w)?;
-        (data.len() as u32).reflect(&mut conn.w)?;
-        conn.w.writer.write_all(data)?;
+        let mut x = move || -> Result<(), SerializeError> {
+            node.reflect(&mut conn.w)?;
+            PACKET_MAGIC.reflect(&mut conn.w)?;
+            (data.len() as u32).reflect(&mut conn.w)?;
+            conn.w.writer.write_all(data)?;
 
-        Ok(())
+            Ok(())
+        };
+
+        if x().is_err() {
+            self.alive.swap(false, AtomicOrdering::Relaxed);
+        }
     }
 
     pub fn recv(&self) -> Option<Packet> {

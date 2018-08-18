@@ -4,6 +4,23 @@ use super::*;
 
 pub struct Serializer<W: Write> {
     pub writer: W,
+    pub current_node: Option<u32>,
+}
+
+impl<W: Write> Serializer<W> {
+    pub fn new(writer: W) -> Self {
+        Self {
+            writer,
+            current_node: None,
+        }
+    }
+
+    pub fn with_current_node(writer: W, current_node: u32) -> Self {
+        Self {
+            writer,
+            current_node: Some(current_node),
+        }
+    }
 }
 
 impl<W: Write> Visitor for Serializer<W> {

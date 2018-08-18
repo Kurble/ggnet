@@ -1,9 +1,13 @@
 #[macro_use] extern crate ggnet_derive;
 #[macro_use] extern crate ggnet;
 
+use std::any::Any;
 use std::env;
 use std::io::Cursor;
 use ggnet::*;
+use std::time;
+use std::thread;
+use std::io::stdin;
 
 use std::net::{TcpListener,TcpStream};
 
@@ -16,8 +20,13 @@ pub struct ExampleNode {
 
 rpc! {
 	ExampleNode | ExampleRPC {
-		rpc test_rpc(&mut self, message: String) {
+		rpc test_rpc(x: Node, message: String) {
 			println!("hello from a client: {}", message);
+		}
+
+		rpc set_first(x: Node, msg: String) {
+			x.as_mut().first = msg;
+			x.member_modified("first".into());
 		}
 	}
 }
@@ -47,6 +56,20 @@ pub fn client_main() {
 	println!("root.first = {}", client.as_ref().first);
 
 	client.test_rpc("some long message sent from the client to the server".into());
+
+	loop {
+		thread::sleep(time::Duration::from_millis(100));
+		client.update();
+
+		println!("root.first = {}", client.as_ref().first);
+
+		let mut buffer = String::new();
+		stdin().read_line(&mut buffer).unwrap();
+
+		client.set_first(buffer);
+
+		println!("message sent.");
+	}
 }
 
 pub fn server_main() {
@@ -58,20 +81,34 @@ pub fn server_main() {
 
 	println!("now listening on {}", ADDR);
 
-	loop {
-		listener.accept().map(|(stream, _)| {
-			let node = server.make_node(ExampleNode {
-				first: String::from("hoi"),
-				second: 12,
-				third: String::from("doei"),
-			});
+	let mut next_frame = time::Instant::now();
 
+	let mut missed_frames = 0;
+
+	let node = server.make_node(ExampleNode {
+		first: String::from("hoi"),
+		second: 12,
+		third: String::from("doei"),
+	});
+
+	loop {
+		next_frame += time::Duration::from_millis(50);
+		while time::Instant::now() >= next_frame {
+			missed_frames += 1;
+			println!("[WARN] Missed a frame! Total missed: {}", missed_frames);
+
+			next_frame += time::Duration::from_millis(50);
+		}
+
+		listener.accept().map(|(stream, _)| {
 			server.add_client(
 				stream.try_clone().unwrap(), 
 				stream.try_clone().unwrap(),
-				node);
+				node.clone());
 		}).ok();
 
-		server.update();		
+		server.update();
+
+		thread::sleep(next_frame - time::Instant::now());		
 	}
 }

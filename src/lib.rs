@@ -1,14 +1,10 @@
 extern crate byteorder;
 #[macro_use] extern crate ggnet_derive;
 
-mod encode;
+mod visitor;
 mod node;
 mod connection;
-mod serializer;
-mod deserializer;
-mod updater;
 mod rpc;
-mod printer;
 mod server;
 
 use std::collections::HashMap;
@@ -17,11 +13,12 @@ use std::hash::Hash;
 use std::sync::{Arc,Mutex};
 use std::io::{Read,Write};
 
-use encode::{encode, decode};
-pub use encode::SerializeError;
-pub use serializer::Serializer;
-pub use deserializer::Deserializer;
-pub use updater::NodeServerExt;
+use visitor::encode::{encode, decode};
+pub use visitor::encode::SerializeError;
+pub use visitor::serializer::Serializer;
+pub use visitor::deserializer::Deserializer;
+pub use visitor::updater::NodeServerExt;
+
 pub use node::*;
 pub use rpc::*;
 pub use connection::*;

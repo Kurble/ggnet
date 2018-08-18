@@ -1,13 +1,14 @@
 use super::*;
 use std::io::Cursor;
-use std::marker::PhantomData;
 use std::ops::{Deref,DerefMut};
+use std::mem::replace;
 use std::sync::MutexGuard;
-use updater::CallUpdate;
+use std::collections::HashSet;
+use visitor::updater::{Updater, CallUpdate};
 
 pub type BufferSerializer = Serializer<Vec<u8>>;
 
-pub type BufferDeserializer<'a, Tag> = Deserializer<&'a[u8], Tag>;
+pub type BufferDeserializer = Deserializer<Cursor<Vec<u8>>>;
 
 pub trait Tag { }
 
@@ -25,130 +26,286 @@ impl Tag for TagAgnostic { }
 
 pub trait NodeBase<T: Tag>: Any {
     fn as_box(&self) -> Box<NodeBase<T>>;
+    fn as_any(&self) -> &Any;
     fn id(&self) -> u32;
     fn send(&self, BufferSerializer);
-    fn recv_rpc<'a>(&mut self, Deserializer<Cursor<Vec<u8>>, TagServer>);
-    fn recv_update<'a>(&mut self, Deserializer<Cursor<Vec<u8>>, TagClient>);
-    fn track(&mut self, conn: Connection);
-    fn untrack(&mut self, conn: Connection);
+    fn recv_rpc<'a>(&mut self, BufferDeserializer);
+    fn recv_update<'a>(&mut self, BufferDeserializer);
+    fn add_ref(&mut self, parent: u32);
+    fn remove_ref(&mut self, parent: u32);
+    fn add_connections(&self, target: &mut HashSet<Connection>); 
 }
 
-pub trait NodeContext<T: Tag> {
-	fn get(&self, id: u32) -> Option<Box<NodeBase<T>>>;
-	fn insert(&mut self, id: u32, node: Box<NodeBase<T>>);
+pub struct NodeContext<T: Tag> {
+    nodes: HashMap<u32, Box<NodeBase<T>>>,
 }
 
-struct NodeInner<T> {
-	val: T,
-	connections: Vec<Connection>,
+struct NodeInner {
+    refs: HashSet<u32>,
+	conns: HashSet<Connection>,
 }
 
-#[derive(Clone)]
-pub struct Node<T: CallUpdate + CallRPC + Default + Any, G: Tag> {
+pub struct Node<T: CallUpdate + CallRPC + Default + Any, G: 'static + Tag> {
+    owner: Option<u32>,
     id: u32,
-    inner: Arc<Mutex<NodeInner<T>>>,
-    tag: PhantomData<G>,
+    context: Option<Arc<Mutex<NodeContext<G>>>>,
+    val: Arc<Mutex<T>>,
+    inner: Arc<Mutex<NodeInner>>,
+    root: Option<Connection>,
+}
+
+impl<T: CallUpdate + CallRPC + Default + Any, G: 'static + Tag> Drop for Node<T, G> {
+    fn drop(&mut self) {
+        if self.owner.is_some() {
+            let owner = self.owner.unwrap();
+            self.remove_ref(owner);
+        }
+    }
+}
+
+impl<T: CallUpdate + CallRPC + Default + Any, G: Tag> Clone for Node<T, G> {
+    fn clone(&self) -> Self {
+        Self {
+            owner: None,
+            id: self.id,
+            context: self.context.clone(),
+            val: self.val.clone(),
+            inner: self.inner.clone(),
+            root: self.root.clone(),
+        }
+    }
 }
 
 impl<T: CallUpdate + CallRPC + Default + Any, G: Tag> Default for Node<T, G> {
     fn default() -> Self {
         Self {
-        	id: 0,
-            tag: PhantomData,
+        	owner: None,
+            id: 0,
+            context: None,
+            val: Arc::new(Mutex::new(Default::default())),
         	inner: Arc::new(Mutex::new(NodeInner {
-        		val: Default::default(),
-        		connections: Vec::new(),
+        		refs: HashSet::new(),
+        		conns: HashSet::new(),
         	})),
+            root: None,
         }
     }
 }
 
-impl<V: Visitor, T: CallUpdate + CallRPC + Reflect<V> + Any, G: Tag> Reflect<V> for Node<T, G> {
-    fn reflect(&mut self, visitor: &mut V) -> Result<(), SerializeError> {
-        let mut lk = self.inner.lock().unwrap();
-        Ok(lk.val.reflect(visitor)?)
+/*
+
+big hashmap with all cumulative connections
+
+
+HashMap<NodeID, (Set<Conn> /* cumulative */, Vec<NodeID> /*ref-by*/)>
+0 -> [conn 0], []
+1 -> [conn 1], []
+3 -> [conn 2], []
+
+2 -> [conn 0, conn 1], [0, 1]
+
+remove 2 from 1: 
+-> remove all 2's connections
+-> remove 1 from 2's ref-by list
+-> gather all connections from ref-by list
+-> recurse to 2's children:
+    -> regather connections
+
+add 2 to 3
+-> add 3 to 2's ref-by list
+-> add new connections from 3
+-> recurse to 2's children:
+    -> regather connections
+
+
+every node is referenced by an Arc<Inner>...
+should Inner contain a list of parent id's?
+
+Node.drop could then deregister itself as a parent
+
+
+
+*/
+
+
+
+
+
+impl<W, T, G> Reflect<Serializer<W>> for Node<T,G> where
+    W: Write,
+    T: 'static + CallUpdate + CallRPC + Reflect<Serializer<W>>,
+    G: 'static + Tag
+{
+    fn reflect(&mut self, visit: &mut Serializer<W>) -> Result<(), SerializeError> {
+        self.owner = visit.current_node.clone();
+        visit.current_node.as_ref().map(|id| self.add_ref(*id));
+
+        // push a new parent id on the stack
+        let parent = replace(&mut visit.current_node, Some(self.id));
+        // reflect using the new parent
+        self.id.reflect(visit)?;
+        self.val.lock().unwrap().reflect(visit)?;
+        // return to the old parent
+        visit.current_node = parent;
+
+        Ok(())
+    }
+}
+
+impl<R, T, G> Reflect<Deserializer<R>> for Node<T,G> where
+    R: Read,
+    T: 'static + CallUpdate + CallRPC + Reflect<Deserializer<R>>,
+    G: 'static + Tag,
+{
+    fn reflect(&mut self, visit: &mut Deserializer<R>) -> Result<(), SerializeError> {
+        self.id.reflect(visit)?;
+
+        let node = self.context.as_ref().unwrap().lock().unwrap().get(self.id);
+
+        let shared_inner: Box<NodeBase<G>> = node.unwrap_or_else(|| {
+            let new_node = Node::<T, G>::new(0, Default::default(), self.context.as_ref().unwrap().clone());
+
+            self.context.as_ref().unwrap().lock().unwrap().insert(self.id, new_node.as_box());
+            new_node.as_box()
+        });
+        let shared_inner = shared_inner.as_any().downcast_ref::<Self>().unwrap();
+        self.inner = shared_inner.inner.clone();
+        self.val = shared_inner.val.clone();
+
+        self.val.lock().unwrap().reflect(visit)?;
+
+        Ok(())
+    }
+}
+
+impl<V, T> Reflect<Updater<V>> for Node<T, TagServer> where
+    V: Visitor,
+    T: 'static + CallUpdate + CallRPC + Reflect<Updater<V>>,
+{
+    fn reflect(&mut self, visit: &mut Updater<V>) -> Result<(), SerializeError> {
+        self.val.lock().unwrap().reflect(visit)?;
+        Ok(())
+    }
+}
+
+impl<V, T> Reflect<Updater<V>> for Node<T, TagClient> where
+    V: Visitor,
+    T: 'static + CallUpdate + CallRPC + Reflect<Updater<V>>,
+{
+    fn reflect(&mut self, visit: &mut Updater<V>) -> Result<(), SerializeError> {
+        self.val.lock().unwrap().reflect(visit)?;
+        Ok(())
     }
 }
 
 impl<T: CallUpdate + CallRPC + Default + Any, G: Tag> Node<T, G> {
-    pub fn new(id: u32, val: T) -> Self {
+    pub fn new(id: u32, val: T, context: Arc<Mutex<NodeContext<G>>>) -> Self {
         Self {
+            owner: None,
             id,
-            tag: PhantomData,
+            context: Some(context),
+            val: Arc::new(Mutex::new(val)),
             inner: Arc::new(Mutex::new(NodeInner{
-                val,
-                connections: Vec::new()
+                refs: HashSet::new(),
+                conns: HashSet::new()
             })),
+            root: None,
         }
+    }
+
+    pub fn set_root(&mut self, conn: Connection) {
+        self.root = Some(conn.clone());
+        self.inner.lock().unwrap().conns.insert(conn.clone());
     }
 
     fn inner_clone(&self) -> Box<Node<T, G>> {
         Box::new(Node {
+            owner: None,
             id: self.id,
+            context: self.context.clone(),
+            val: self.val.clone(),
             inner: self.inner.clone(),
-            tag: PhantomData,
+            root: self.root.clone(),
         })
     }
 }
 
-
-
 impl<T: CallUpdate + CallRPC + Default + Any, G: 'static + Tag> NodeBase<G> for Node<T, G> {
     fn as_box(&self) -> Box<NodeBase<G>> { self.inner_clone() }
+
+    fn as_any(&self) -> &Any {
+        self
+    }
 
     fn id(&self) -> u32 { self.id }
 
     fn send(&self, msg: BufferSerializer) {
-        let lk = self.inner.lock().unwrap();
-
-        // send message to recipients
-        for conn in lk.connections.iter() {
+        for conn in self.inner.lock().unwrap().conns.iter() {
             conn.send(self.id, msg.writer.as_slice());
         }
     }
 
-    fn recv_rpc<'a>(&mut self, msg: Deserializer<Cursor<Vec<u8>>, TagServer>) {
-        self.inner.lock().unwrap().val.call_rpc(msg);
+    fn recv_rpc<'a>(&mut self, msg: BufferDeserializer) {
+        T::call_rpc(self, msg);
     }
 
-    fn recv_update<'a>(&mut self, msg: Deserializer<Cursor<Vec<u8>>, TagClient>) {
-        self.inner.lock().unwrap().val.call_upd(msg);
+    fn recv_update<'a>(&mut self, msg: BufferDeserializer) {
+        self.val.lock().unwrap().call_upd(msg);
     }
 
-    fn track(&mut self, conn: Connection) {
-        let mut lk = self.inner.lock().unwrap();
-        lk.connections.push(conn);
+    fn add_ref(&mut self, parent: u32) {
+        let mut inner = self.inner.lock().unwrap();
+        let context = self.context.as_ref().unwrap().lock().unwrap();
+
+        inner.refs.insert(parent);
+        context.get(parent).unwrap().add_connections(&mut inner.conns);
     }
 
-    fn untrack(&mut self, conn: Connection) {
-        let mut lk = self.inner.lock().unwrap();
-        lk.connections.retain(|x| x != &conn);
+    fn remove_ref(&mut self, parent: u32) {
+        let mut inner = self.inner.lock().unwrap();
+        let inner: &mut NodeInner = &mut inner;
+        let conns = &mut inner.conns;
+        let refs = &mut inner.refs;
+        let context = self.context.as_ref().unwrap().lock().unwrap();
+
+        conns.clear();
+        refs.retain(|x| x != &parent);
+        for r in refs.iter() {
+            context.get(*r).unwrap().add_connections(conns);
+        }
+    }
+
+    fn add_connections(&self, target: &mut HashSet<Connection>) {
+        self.root.as_ref().map(|root| target.insert(root.clone()));
+        for c in self.inner.lock().unwrap().conns.iter() {
+            target.insert(c.clone());
+        }
     }
 }
 
 impl<T: CallUpdate + CallRPC + Default + Any, G: Tag> Node<T, G> {
 	pub fn as_ref<'a>(&'a self) -> Borrow<'a, T> {
-		Borrow { x: self.inner.lock().unwrap() }
+		Borrow { x: self.val.lock().unwrap() }
 	}
 
 	pub fn as_mut<'a>(&'a mut self) -> BorrowMut<'a, T> {
-		BorrowMut { x: self.inner.lock().unwrap() }
+		BorrowMut { x: self.val.lock().unwrap() }
 	}
 }
 
 pub struct Borrow<'a, T: 'a> {
-	x: MutexGuard<'a, NodeInner<T>>,
+	x: MutexGuard<'a, T>,
 }
 
 pub struct BorrowMut<'a, T: 'a> {
-	x: MutexGuard<'a, NodeInner<T>>,
+	x: MutexGuard<'a, T>,
 }
 
 impl<'a, T: Default> Deref for Borrow<'a, T> {
 	type Target = T;
 
 	fn deref(&self) -> &T {
-		&self.x.val
+		&self.x
 	}
 }
 
@@ -156,12 +313,28 @@ impl<'a, T: Default> Deref for BorrowMut<'a, T> {
 	type Target = T;
 
 	fn deref(&self) -> &T {
-		&self.x.val
+		&self.x
 	}
 }
 
 impl<'a, T: Default> DerefMut for BorrowMut<'a, T> {
 	fn deref_mut(&mut self) -> &mut T {
-		&mut self.x.val
+		&mut self.x
 	}
+}
+
+impl<T: Tag> NodeContext<T> {
+    pub fn new() -> NodeContext<T> {
+        Self {
+            nodes: HashMap::new()
+        }
+    }
+
+    pub fn get(&self, id: u32) -> Option<Box<NodeBase<T>>> {
+        self.nodes.get(&id).map(|node| node.as_box())
+    }
+
+    pub fn insert(&mut self, id: u32, node: Box<NodeBase<T>>) {
+        self.nodes.insert(id, node);
+    }
 }

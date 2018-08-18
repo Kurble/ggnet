@@ -1,18 +1,17 @@
 use super::*;
 use std::ops::{Deref,DerefMut};
 use std::io::Cursor;
-use std::rc::Rc;
-use std::cell::RefCell;
-use updater::CallUpdate;
+use visitor::updater::CallUpdate;
 
 pub struct Server {
-    nodes: HashMap<u32, Box<NodeBase<TagServer>>>,
+    context: Arc<Mutex<NodeContext<TagServer>>>,
     clients: Vec<ServerClient>,
     next_connection_id: usize,
     next_node_id: u32,
 }
 
 pub struct ServerClient {
+	context: Arc<Mutex<NodeContext<TagServer>>>,
     conn: Connection,
     root: Box<NodeBase<TagServer>>,
 }
@@ -20,76 +19,72 @@ pub struct ServerClient {
 pub struct Client<T: Default + CallUpdate + CallRPC + Any> {
 	conn: Connection,
 	root: Node<T, TagClient>,
-	nodes: Rc<RefCell<HashMap<u32, Box<NodeBase<TagClient>>>>>,
+	context: Arc<Mutex<NodeContext<TagClient>>>,
 }
 
 impl Server {
 	pub fn new() -> Server {
 		Self {
-			nodes: HashMap::new(),
+			context: Arc::new(Mutex::new(NodeContext::new())),
 			clients: Vec::new(),
 			next_connection_id: 1,
 			next_node_id: 1,
 		}
 	}
 
-	pub fn add_client<W, R, T>(&mut self, w: W, r: R, mut root: T)  where
+	pub fn add_client<W, R, T>(&mut self, w: W, r: R, mut root: Node<T, TagServer>)  where
 		W: 'static + Write,
 		R: 'static + Read + Send,
-		T: 'static + NodeBase<TagServer> + Default + NodeServerExt,
+		T: 'static + CallRPC + CallUpdate + Default + Any,
+		Node<T, TagServer>: NodeServerExt
 	{
 		let conn = Connection::new(w, r, self.next_connection_id);
 
-		let client = ServerClient{
+		let mut ser = Serializer::new(Vec::new());
+		root.reflect(&mut ser).unwrap();
+		conn.send(0, ser.writer.as_slice());
+		root.set_root(conn.clone());
+
+		self.clients.push(ServerClient{
+			context: self.context.clone(),
 			conn: conn.clone(),
 			root: root.as_box(),
-		};
-
-		root.track(conn);
-		root.resync();
-
-		self.clients.push(client);
+		});
 		self.next_connection_id += 1;
 	}
 
 	pub fn make_node<T>(&mut self, content: T) -> Node<T, TagServer> where
 		T: 'static + CallUpdate + CallRPC + Default + Any
 	{
-		let node = Node::new(self.next_node_id, content);
+		let node = Node::new(self.next_node_id, content, self.context.clone());
 
-		self.nodes.insert(self.next_node_id, node.as_box());
+		self.context.lock().unwrap().insert(self.next_node_id, node.as_box());
 		self.next_node_id += 1;
 
 		node
 	}
 
 	pub fn update(&mut self) {
-		self.clients.retain(|c| c.conn.is_alive());
+		self.clients.retain(|c| if c.conn.is_alive() { true } else { println!("drop connection"); false });
 
 		for c in self.clients.iter_mut() {
-			c.update(&mut self.nodes);
+			c.update();
 		}
 	}
 }
 
-impl<T: CallUpdate + CallRPC + Default + Any> Client<T> {
+impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Deserializer<Cursor<Vec<u8>>>>> Client<T> {
 	pub fn new(conn: Connection) -> Self {
+		let context = Arc::new(Mutex::new(NodeContext::new()));
+
 		let packet = conn.recv_blocking();
 
-		let mut nodes = Rc::new(RefCell::new(HashMap::new()));
+		let mut root = Node::new(packet.node, T::default(), context.clone());
+		root.reflect(&mut Deserializer::new(Cursor::new(packet.data))).unwrap();
+		root.set_root(conn.clone());
+		assert!(root.id() > 0);
 
-		let mut root = Node::new(packet.node, T::default());
-
-		root.recv_update(Deserializer {
-			reader: Cursor::new(packet.data),
-			context: Box::new(nodes.clone()),
-		});
-
-		root.track(conn.clone());
-
-		nodes.insert(packet.node, root.as_box());
-
-		Self { conn, root, nodes }
+		Self { conn, root, context }
 	}
 
 	pub fn update(&mut self) {
@@ -101,12 +96,9 @@ impl<T: CallUpdate + CallRPC + Default + Any> Client<T> {
 
 			let packet = packet.unwrap();
 
-			let mut node = self.nodes.get(packet.node).unwrap().as_box();
+			let mut node = self.context.lock().unwrap().get(packet.node).unwrap().as_box();
 			
-			node.recv_update(Deserializer {
-				reader: Cursor::new(packet.data),
-				context: Box::new(self.nodes.clone()),
-			});
+			node.recv_update(Deserializer::new(Cursor::new(packet.data)));
 		}
 	}
 }
@@ -125,25 +117,11 @@ impl<T: CallUpdate + CallRPC + Default + Any> DerefMut for Client<T> {
 	}
 }
 
-impl<T: Tag> NodeContext<T> for Rc<RefCell<HashMap<u32, Box<NodeBase<T>>>>> {
-	fn get(&self, id: u32) -> Option<Box<NodeBase<T>>> {
-		self.borrow().get(&id).map(|node| node.as_box())
-	}
-	fn insert(&mut self, id: u32, node: Box<NodeBase<T>>) {
-		self.borrow_mut().insert(id, node);
-	}
-}
-
 impl ServerClient {
-	fn update<'a>(&'a mut self, nodes: &'a mut HashMap<u32, Box<NodeBase<TagServer>>>) {
-		// read and process available packets
+	fn update<'a>(&'a mut self) {
 		self.conn.recv().map(|packet| {
-			let mut node = nodes.get_mut(&packet.node).unwrap().as_box();
-			
-			node.recv_rpc(Deserializer {
-				reader: Cursor::new(packet.data),
-				context: Box::new(()),
-			});
+			let mut node = self.context.lock().unwrap().get(packet.node).unwrap().as_box();
+			node.recv_rpc(Deserializer::new(Cursor::new(packet.data)));
 		});
 	}
 }
