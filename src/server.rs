@@ -2,6 +2,7 @@ use super::*;
 use std::ops::{Deref,DerefMut};
 use std::io::Cursor;
 use visitor::updater::CallUpdate;
+use visitor::refresher::Refresher;
 
 pub struct Server {
     context: Arc<Mutex<NodeContext<TagServer>>>,
@@ -16,7 +17,7 @@ pub struct ServerClient {
     root: Box<NodeBase<TagServer>>,
 }
 
-pub struct Client<T: Default + CallUpdate + CallRPC + Any> {
+pub struct Client<T: Default + CallUpdate + CallRPC + Any + Reflect<Refresher>> {
 	conn: Connection,
 	root: Node<T, TagClient>,
 	context: Arc<Mutex<NodeContext<TagClient>>>,
@@ -32,13 +33,14 @@ impl Server {
 		}
 	}
 
-	pub fn add_client<W, R, T>(&mut self, w: W, r: R, mut root: Node<T, TagServer>)  where
+	pub fn add_client<W, R, T>(&mut self, w: W, r: R, root: T)  where
 		W: 'static + Write,
 		R: 'static + Read + Send,
-		T: 'static + CallRPC + CallUpdate + Default + Any,
-		Node<T, TagServer>: NodeServerExt
+		T: 'static + CallRPC + CallUpdate + Default + Any + Reflect<Serializer<Vec<u8>>> + Reflect<Refresher>,
+		//Node<T, TagServer>: NodeServerExt
 	{
 		let conn = Connection::new(w, r, self.next_connection_id);
+		let mut root = self.make_node(root);
 
 		let mut ser = Serializer::new(Vec::new());
 		root.reflect(&mut ser).unwrap();
@@ -54,7 +56,7 @@ impl Server {
 	}
 
 	pub fn make_node<T>(&mut self, content: T) -> Node<T, TagServer> where
-		T: 'static + CallUpdate + CallRPC + Default + Any
+		T: 'static + CallUpdate + CallRPC + Default + Any + Reflect<Refresher>
 	{
 		let node = Node::new(self.next_node_id, content, self.context.clone());
 
@@ -73,7 +75,14 @@ impl Server {
 	}
 }
 
-impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Deserializer<Cursor<Vec<u8>>>>> Client<T> {
+impl<T> Client<T> where
+	T: CallUpdate + 
+	   CallRPC + 
+	   Default + 
+	   Any + 
+	   Reflect<Deserializer<Cursor<Vec<u8>>>> + 
+	   Reflect<Refresher>
+{
 	pub fn new(conn: Connection) -> Self {
 		let context = Arc::new(Mutex::new(NodeContext::new()));
 
@@ -103,7 +112,7 @@ impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Deserializer<Cursor<Vec<u
 	}
 }
 
-impl<T: CallUpdate + CallRPC + Default + Any> Deref for Client<T> {
+impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>> Deref for Client<T> {
 	type Target = Node<T, TagClient>;
 
 	fn deref(&self) -> &Node<T, TagClient> {
@@ -111,7 +120,7 @@ impl<T: CallUpdate + CallRPC + Default + Any> Deref for Client<T> {
 	}
 }
 
-impl<T: CallUpdate + CallRPC + Default + Any> DerefMut for Client<T> {
+impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>> DerefMut for Client<T> {
 	fn deref_mut(&mut self) -> &mut Node<T, TagClient> {
 		&mut self.root
 	}

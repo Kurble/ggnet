@@ -9,8 +9,8 @@ pub trait CallRPC {
 macro_rules! rpc {
     // implement rpc functions for a type. These send a message to the server instead of executing the code.
     // The code is then executed on the server side using the CallRPC trait.
-    ($($self:ty | $trait_name:ident {
-        $(rpc $fn_name:ident($self_name:ident : Node $(, $arg:ident : $arg_ty:ty)*) $body:expr)* 
+    ($(rpcs<$($bound:ident : $bound_ty:path),*> $self:ty | $trait_name:ident {
+        $(rpc $fn_name:ident($self_name:ident : Node $(, $arg:ident : $arg_ty:ty)*) $body:block)* 
     })*) => {$(
         // define a trait that enables the defined RPCs
         pub trait $trait_name {
@@ -18,7 +18,7 @@ macro_rules! rpc {
         }
 
         // impl the trait to do requests
-        impl $trait_name for Node<$self, TagClient> where Self: NodeBase<TagClient> { 
+        impl<$($bound : $bound_ty),*> $trait_name for Node<$self, TagClient> where Self: NodeBase<TagClient> { 
             $(fn $fn_name(&mut self $(, mut $arg : $arg_ty)*) {
                 let mut ser = BufferSerializer::new(vec![]);
 
@@ -30,7 +30,7 @@ macro_rules! rpc {
         }
 
         // impl the trait to execute functions
-        impl $trait_name for Node<$self, TagServer> where Self: NodeBase<TagServer> {
+        impl<$($bound : $bound_ty),*> $trait_name for Node<$self, TagServer> where Self: NodeBase<TagServer> {
             $(fn $fn_name(&mut self $(, $arg : $arg_ty)*) {
                 #[allow(unused)]
                 let $self_name: &mut Self = self;
@@ -38,7 +38,7 @@ macro_rules! rpc {
             })*
         }
 
-        impl CallRPC for $self {
+        impl<$($bound : $bound_ty),*> CallRPC for $self {
             fn call_rpc(node: &mut Any, mut msg: Deserializer<Cursor<Vec<u8>>>) {
                 let mut rpc_id = String::default();
                 rpc_id.reflect(&mut msg).unwrap();

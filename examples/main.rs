@@ -12,14 +12,18 @@ use std::io::stdin;
 use std::net::{TcpListener,TcpStream};
 
 #[derive(Reflect, Default)]
-pub struct ExampleNode {
-	pub first: String,
-	pub second: u32,
-	pub third: String,
+pub struct ExampleNode<T: Tag> {
+	pub title: String,
+	pub chat: Node<ExampleChatLog, T>,
+}
+
+#[derive(Reflect, Default)]
+pub struct ExampleChatLog {
+	pub chats: Vec<String>,
 }
 
 rpc! {
-	ExampleNode | ExampleRPC {
+	rpcs<T: Tag> ExampleNode<T> | ExampleRPC {
 		rpc test_rpc(x: Node, message: String) {
 			println!("hello from a client: {}", message);
 		}
