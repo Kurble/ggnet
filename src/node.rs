@@ -11,12 +11,15 @@ pub type BufferSerializer = Serializer<Vec<u8>>;
 
 pub type BufferDeserializer = Deserializer<Cursor<Vec<u8>>>;
 
-pub trait Tag { }
+pub trait Tag: 'static + Default { }
 
+#[derive(Default)]
 pub struct TagServer;
 
+#[derive(Default)]
 pub struct TagClient;
 
+#[derive(Default)]
 pub struct TagAgnostic;
 
 impl Tag for TagServer { }
@@ -179,19 +182,10 @@ impl<R, T, G> Reflect<Deserializer<R>> for Node<T,G> where
     }
 }
 
-impl<V, T> Reflect<Updater<V>> for Node<T, TagServer> where
+impl<V, T, G> Reflect<Updater<V>> for Node<T, G> where
     V: Visitor,
     T: 'static + CallUpdate + CallRPC + Reflect<Updater<V>> + Reflect<Refresher>,
-{
-    fn reflect(&mut self, visit: &mut Updater<V>) -> Result<(), SerializeError> {
-        self.val.lock().unwrap().reflect(visit)?;
-        Ok(())
-    }
-}
-
-impl<V, T> Reflect<Updater<V>> for Node<T, TagClient> where
-    V: Visitor,
-    T: 'static + CallUpdate + CallRPC + Reflect<Updater<V>> + Reflect<Refresher>,
+    G: Tag,
 {
     fn reflect(&mut self, visit: &mut Updater<V>) -> Result<(), SerializeError> {
         self.val.lock().unwrap().reflect(visit)?;
@@ -205,6 +199,8 @@ impl<T, G> Reflect<Refresher> for Node<T,G> where
 {
     fn reflect(&mut self, visit: &mut Refresher) -> Result<(), SerializeError> {
         {
+            self.context = Some(visit.context());
+
             let mut inner = self.inner.lock().unwrap();
             let inner: &mut NodeInner = &mut inner;
             let refs = &mut inner.refs;
@@ -282,29 +278,33 @@ impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: 'static + 
     }
 
     fn add_ref(&mut self, parent: u32) {
-        let mut inner = self.inner.lock().unwrap();
-        let context = self.context.as_ref().unwrap().lock().unwrap();
+        {
+            let mut inner = self.inner.lock().unwrap();
+            let context = self.context.as_ref().unwrap().lock().unwrap();
 
-        inner.refs.insert(parent);
-        context.get(parent).unwrap().add_connections(&mut inner.conns);
+            inner.refs.insert(parent);
+            context.get(parent).unwrap().add_connections(&mut inner.conns);
+        }
 
-        self.val.lock().unwrap().reflect(&mut Refresher).unwrap();
+        self.val.lock().unwrap().reflect(&mut Refresher::new(self.context.clone().unwrap())).unwrap();
     }
 
     fn remove_ref(&mut self, parent: u32) {
-        let mut inner = self.inner.lock().unwrap();
-        let inner: &mut NodeInner = &mut inner;
-        let conns = &mut inner.conns;
-        let refs = &mut inner.refs;
-        let context = self.context.as_ref().unwrap().lock().unwrap();
+        {
+            let mut inner = self.inner.lock().unwrap();
+            let inner: &mut NodeInner = &mut inner;
+            let conns = &mut inner.conns;
+            let refs = &mut inner.refs;
+            let context = self.context.as_ref().unwrap().lock().unwrap();
 
-        conns.clear();
-        refs.retain(|x| x != &parent);
-        for r in refs.iter() {
-            context.get(*r).unwrap().add_connections(conns);
+            conns.clear();
+            refs.retain(|x| x != &parent);
+            for r in refs.iter() {
+                context.get(*r).unwrap().add_connections(conns);
+            }
         }
 
-        self.val.lock().unwrap().reflect(&mut Refresher).unwrap();
+        self.val.lock().unwrap().reflect(&mut Refresher::new(self.context.clone().unwrap())).unwrap();
     }
 
     fn add_connections(&self, target: &mut HashSet<Connection>) {

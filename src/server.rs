@@ -35,17 +35,22 @@ impl Server {
 
 	pub fn add_client<W, R, T>(&mut self, w: W, r: R, root: T)  where
 		W: 'static + Write,
-		R: 'static + Read + Send,
-		T: 'static + CallRPC + CallUpdate + Default + Any + Reflect<Serializer<Vec<u8>>> + Reflect<Refresher>,
-		//Node<T, TagServer>: NodeServerExt
+		R: 'static + Read + 
+		             Send,
+		T: 'static + CallRPC + 
+		             CallUpdate + 
+		             Default + 
+		             Any + 
+		             Reflect<Serializer<Vec<u8>>> + 
+		             Reflect<Refresher>,
 	{
 		let conn = Connection::new(w, r, self.next_connection_id);
 		let mut root = self.make_node(root);
 
 		let mut ser = Serializer::new(Vec::new());
+		root.set_root(conn.clone());
 		root.reflect(&mut ser).unwrap();
 		conn.send(0, ser.writer.as_slice());
-		root.set_root(conn.clone());
 
 		self.clients.push(ServerClient{
 			context: self.context.clone(),

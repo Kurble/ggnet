@@ -9,7 +9,7 @@ pub trait CallRPC {
 macro_rules! rpc {
     // implement rpc functions for a type. These send a message to the server instead of executing the code.
     // The code is then executed on the server side using the CallRPC trait.
-    ($(rpcs<$($bound:ident : $bound_ty:path),*> $self:ty | $trait_name:ident {
+    ($(rpcs<$($bound:ident : $bound_ty:path),*> $trait_name:ident for $self:ty  {
         $(rpc $fn_name:ident($self_name:ident : Node $(, $arg:ident : $arg_ty:ty)*) $body:block)* 
     })*) => {$(
         // define a trait that enables the defined RPCs
