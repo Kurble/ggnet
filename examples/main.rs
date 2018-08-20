@@ -36,6 +36,7 @@ rpc! {
 
     rpcs<> ChatRPC for ExampleChatLog {
         rpc chat(x: Node, msg: String) {
+            println!("chat {}", msg);
             x.member_vec_push("chats".into(), msg);
         }
     }

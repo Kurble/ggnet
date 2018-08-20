@@ -4,13 +4,25 @@ use super::*;
 
 pub struct Deserializer<R: Read> {
     pub reader: R,
+    context: Option<Box<Any>>,
 }
 
 impl<R: Read> Deserializer<R> {
     pub fn new(reader: R) -> Self {
         Self {
-            reader
+            reader, context: None,
         }
+    }
+
+    pub fn attach_context<G: Tag>(&mut self, context: Arc<Mutex<NodeContext<G>>>) {
+        self.context = Some(Box::new(context));
+    }
+
+    pub fn context<G: Tag>(&self) -> Arc<Mutex<NodeContext<G>>> {
+        self.context
+            .as_ref().unwrap()
+            .downcast_ref::<Arc<Mutex<NodeContext<G>>>>().unwrap()
+            .clone()
     }
 }
 

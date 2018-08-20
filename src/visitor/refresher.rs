@@ -1,20 +1,6 @@
 use super::*;
 
-pub struct Refresher {
-    context: Box<Any>,
-}
-
-impl Refresher {
-    pub fn new<G: Tag>(context: Arc<Mutex<NodeContext<G>>>) -> Self {
-        Self {
-            context: Box::new(context),
-        }
-    }
-
-    pub fn context<G: Tag>(&self) -> Arc<Mutex<NodeContext<G>>> {
-        self.context.downcast_ref::<Arc<Mutex<NodeContext<G>>>>().unwrap().clone()
-    }
-}
+pub struct Refresher;
 
 impl Visitor for Refresher {
     fn visit<T: Reflect<Refresher>>(&mut self, _: &str, val: &mut T) -> Result<(), SerializeError> {

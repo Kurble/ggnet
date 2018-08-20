@@ -94,7 +94,9 @@ impl<T> Client<T> where
 		let packet = conn.recv_blocking();
 
 		let mut root = Node::new(packet.node, T::default(), context.clone());
-		root.reflect(&mut Deserializer::new(Cursor::new(packet.data))).unwrap();
+		let mut de = Deserializer::new(Cursor::new(packet.data));
+		de.attach_context(context.clone());
+		root.reflect(&mut de).unwrap();
 		root.set_root(conn.clone());
 		assert!(root.id() > 0);
 
@@ -111,8 +113,10 @@ impl<T> Client<T> where
 			let packet = packet.unwrap();
 
 			let mut node = self.context.lock().unwrap().get(packet.node).unwrap().as_box();
+			let mut de = Deserializer::new(Cursor::new(packet.data));
+			de.attach_context(self.context.clone());
 			
-			node.recv_update(Deserializer::new(Cursor::new(packet.data)));
+			node.recv_update(de);
 		}
 	}
 }

@@ -163,6 +163,9 @@ impl<R, T, G> Reflect<Deserializer<R>> for Node<T,G> where
 {
     fn reflect(&mut self, visit: &mut Deserializer<R>) -> Result<(), SerializeError> {
         self.id.reflect(visit)?;
+        if self.context.is_none() {
+            self.context = Some(visit.context());
+        }
 
         let node = self.context.as_ref().unwrap().lock().unwrap().get(self.id);
 
@@ -199,8 +202,6 @@ impl<T, G> Reflect<Refresher> for Node<T,G> where
 {
     fn reflect(&mut self, visit: &mut Refresher) -> Result<(), SerializeError> {
         {
-            self.context = Some(visit.context());
-
             let mut inner = self.inner.lock().unwrap();
             let inner: &mut NodeInner = &mut inner;
             let refs = &mut inner.refs;
@@ -286,7 +287,7 @@ impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: 'static + 
             context.get(parent).unwrap().add_connections(&mut inner.conns);
         }
 
-        self.val.lock().unwrap().reflect(&mut Refresher::new(self.context.clone().unwrap())).unwrap();
+        self.val.lock().unwrap().reflect(&mut Refresher).unwrap();
     }
 
     fn remove_ref(&mut self, parent: u32) {
@@ -304,7 +305,7 @@ impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: 'static + 
             }
         }
 
-        self.val.lock().unwrap().reflect(&mut Refresher::new(self.context.clone().unwrap())).unwrap();
+        self.val.lock().unwrap().reflect(&mut Refresher).unwrap();
     }
 
     fn add_connections(&self, target: &mut HashSet<Connection>) {
