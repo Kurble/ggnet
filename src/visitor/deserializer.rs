@@ -4,13 +4,20 @@ use super::*;
 
 pub struct Deserializer<R: Read> {
     pub reader: R,
+    pub current_node: Option<u32>,
     context: Option<Box<Any>>,
 }
 
 impl<R: Read> Deserializer<R> {
     pub fn new(reader: R) -> Self {
         Self {
-            reader, context: None,
+            reader, current_node: None, context: None,
+        }
+    }
+
+    pub fn with_current_node(reader: R, current_node: u32) -> Self {
+        Self {
+            reader, current_node: Some(current_node), context: None
         }
     }
 

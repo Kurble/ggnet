@@ -2,7 +2,7 @@ use super::*;
 use std::io::Cursor;
 use std::ops::{Deref,DerefMut};
 use std::mem::replace;
-use std::sync::MutexGuard;
+use std::sync::{Weak, MutexGuard};
 use std::collections::HashSet;
 use visitor::updater::{Updater, CallUpdate};
 use visitor::refresher::Refresher;
@@ -46,7 +46,8 @@ pub struct NodeContext<T: Tag> {
 
 struct NodeInner {
     refs: HashSet<u32>,
-	conns: HashSet<Connection>,
+    conns: HashSet<Connection>,
+    root: Option<Connection>,
 }
 
 pub struct Node<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: 'static + Tag> {
@@ -55,7 +56,13 @@ pub struct Node<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G:
     context: Option<Arc<Mutex<NodeContext<G>>>>,
     val: Arc<Mutex<T>>,
     inner: Arc<Mutex<NodeInner>>,
-    root: Option<Connection>,
+}
+
+struct WeakNode<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: Tag> {
+    id: u32,
+    context: Option<Arc<Mutex<NodeContext<G>>>>,
+    val: Weak<Mutex<T>>,
+    inner: Weak<Mutex<NodeInner>>,
 }
 
 impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: 'static + Tag> Drop for Node<T, G> {
@@ -63,6 +70,12 @@ impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: 'static + 
         if self.owner.is_some() {
             let owner = self.owner.unwrap();
             self.remove_ref(owner);
+        }
+
+        // destroy the node if this is the last strong reference
+        if Arc::strong_count(&self.inner) == 1 {
+            println!("gc node {}", self.id);
+            self.context.as_ref().unwrap().lock().unwrap().gc(self.id);
         }
     }
 }
@@ -75,7 +88,6 @@ impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: Tag> Clone
             context: self.context.clone(),
             val: self.val.clone(),
             inner: self.inner.clone(),
-            root: self.root.clone(),
         }
     }
 }
@@ -83,57 +95,18 @@ impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: Tag> Clone
 impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: Tag> Default for Node<T, G> {
     fn default() -> Self {
         Self {
-        	owner: None,
+            owner: None,
             id: 0,
             context: None,
             val: Arc::new(Mutex::new(Default::default())),
-        	inner: Arc::new(Mutex::new(NodeInner {
-        		refs: HashSet::new(),
-        		conns: HashSet::new(),
-        	})),
-            root: None,
+            inner: Arc::new(Mutex::new(NodeInner {
+                refs: HashSet::new(),
+                conns: HashSet::new(),
+                root: None,
+            })),
         }
     }
 }
-
-/*
-
-big hashmap with all cumulative connections
-
-
-HashMap<NodeID, (Set<Conn> /* cumulative */, Vec<NodeID> /*ref-by*/)>
-0 -> [conn 0], []
-1 -> [conn 1], []
-3 -> [conn 2], []
-
-2 -> [conn 0, conn 1], [0, 1]
-
-remove 2 from 1: 
--> remove all 2's connections
--> remove 1 from 2's ref-by list
--> gather all connections from ref-by list
--> recurse to 2's children:
-    -> regather connections
-
-add 2 to 3
--> add 3 to 2's ref-by list
--> add new connections from 3
--> recurse to 2's children:
-    -> regather connections
-
-
-every node is referenced by an Arc<Inner>...
-should Inner contain a list of parent id's?
-
-Node.drop could then deregister itself as a parent
-
-
-
-*/
-
-
-
-
 
 impl<W, T, G> Reflect<Serializer<W>> for Node<T,G> where
     W: Write,
@@ -141,13 +114,14 @@ impl<W, T, G> Reflect<Serializer<W>> for Node<T,G> where
     G: 'static + Tag
 {
     fn reflect(&mut self, visit: &mut Serializer<W>) -> Result<(), SerializeError> {
+        self.id.reflect(visit)?;
+
         self.owner = visit.current_node.clone();
         visit.current_node.as_ref().map(|id| self.add_ref(*id));
 
         // push a new parent id on the stack
         let parent = replace(&mut visit.current_node, Some(self.id));
         // reflect using the new parent
-        self.id.reflect(visit)?;
         self.val.lock().unwrap().reflect(visit)?;
         // return to the old parent
         visit.current_node = parent;
@@ -159,27 +133,36 @@ impl<W, T, G> Reflect<Serializer<W>> for Node<T,G> where
 impl<R, T, G> Reflect<Deserializer<R>> for Node<T,G> where
     R: Read,
     T: 'static + CallUpdate + CallRPC + Reflect<Deserializer<R>> + Reflect<Refresher>,
-    G: 'static + Tag,
+    G: Tag,
 {
     fn reflect(&mut self, visit: &mut Deserializer<R>) -> Result<(), SerializeError> {
         self.id.reflect(visit)?;
+
         if self.context.is_none() {
             self.context = Some(visit.context());
         }
 
+        // resolve node content
         let node = self.context.as_ref().unwrap().lock().unwrap().get(self.id);
-
         let shared_inner: Box<NodeBase<G>> = node.unwrap_or_else(|| {
-            let new_node = Node::<T, G>::new(0, Default::default(), self.context.as_ref().unwrap().clone());
-
-            self.context.as_ref().unwrap().lock().unwrap().insert(self.id, new_node.as_box());
-            new_node.as_box()
+            let new_node = Node::<T, G>::new(0, T::default(), self.context.clone().unwrap());
+            let result = new_node.as_box();
+            self.context.as_ref().unwrap().lock().unwrap().insert(self.id, new_node);
+            result            
         });
         let shared_inner = shared_inner.as_any().downcast_ref::<Self>().unwrap();
         self.inner = shared_inner.inner.clone();
         self.val = shared_inner.val.clone();
+        // set node owner
+        self.owner = visit.current_node.clone();
+        visit.current_node.as_ref().map(|id| self.add_ref(*id));
 
+        // push a new parent id on the stack
+        let parent = replace(&mut visit.current_node, Some(self.id));
+        // reflect using the new parent
         self.val.lock().unwrap().reflect(visit)?;
+        // return to the old parent
+        visit.current_node = parent;
 
         Ok(())
     }
@@ -206,11 +189,12 @@ impl<T, G> Reflect<Refresher> for Node<T,G> where
             let inner: &mut NodeInner = &mut inner;
             let refs = &mut inner.refs;
             let conns = &mut inner.conns;
+            let root = &inner.root;
             let context = self.context.as_ref().unwrap().lock().unwrap();
 
             conns.clear();
             
-            for c in self.root.iter() {
+            for c in root.iter() {
                 conns.insert(c.clone());
             }
 
@@ -232,15 +216,16 @@ impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: Tag> Node<
             val: Arc::new(Mutex::new(val)),
             inner: Arc::new(Mutex::new(NodeInner{
                 refs: HashSet::new(),
-                conns: HashSet::new()
+                conns: HashSet::new(),
+                root: None,
             })),
-            root: None,
         }
     }
 
     pub fn set_root(&mut self, conn: Connection) {
-        self.root = Some(conn.clone());
-        self.inner.lock().unwrap().conns.insert(conn.clone());
+        let mut inner = self.inner.lock().unwrap();
+        inner.root = Some(conn.clone());
+        inner.conns.insert(conn.clone());
     }
 
     fn inner_clone(&self) -> Box<Node<T, G>> {
@@ -250,12 +235,45 @@ impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: Tag> Node<
             context: self.context.clone(),
             val: self.val.clone(),
             inner: self.inner.clone(),
-            root: self.root.clone(),
         })
     }
 }
 
-impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: 'static + Tag> NodeBase<G> for Node<T, G> {
+impl<T, G> NodeBase<G> for WeakNode<T, G> where
+    T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>,
+    G: Tag
+{
+    fn as_box(&self) -> Box<NodeBase<G>> { 
+        Box::new(Node {
+            owner: None,
+            id: self.id,
+            context: self.context.clone(),
+            val: Weak::upgrade(&self.val).unwrap(),
+            inner: Weak::upgrade(&self.inner).unwrap(),
+        })
+    }
+
+    fn as_any(&self) -> &Any { self }
+
+    fn id(&self) -> u32 { self.id }
+
+    fn send(&self, _: BufferSerializer) { unimplemented!(); }
+
+    fn recv_rpc<'a>(&mut self, msg: BufferDeserializer) { self.as_box().recv_rpc(msg); }
+
+    fn recv_update<'a>(&mut self, msg: BufferDeserializer) { self.as_box().recv_update(msg); }
+
+    fn add_ref(&mut self, _: u32) { unimplemented!(); }
+
+    fn remove_ref(&mut self, _: u32) { unimplemented!(); }
+
+    fn add_connections(&self, target: &mut HashSet<Connection>) { self.as_box().add_connections(target); }
+}
+
+impl<T, G> NodeBase<G> for Node<T, G> where
+    T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, 
+    G: Tag
+{
     fn as_box(&self) -> Box<NodeBase<G>> { self.inner_clone() }
 
     fn as_any(&self) -> &Any {
@@ -279,10 +297,11 @@ impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: 'static + 
     }
 
     fn add_ref(&mut self, parent: u32) {
+        assert!(parent != self.id);
+
         {
             let mut inner = self.inner.lock().unwrap();
             let context = self.context.as_ref().unwrap().lock().unwrap();
-
             inner.refs.insert(parent);
             context.get(parent).unwrap().add_connections(&mut inner.conns);
         }
@@ -291,6 +310,8 @@ impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: 'static + 
     }
 
     fn remove_ref(&mut self, parent: u32) {
+        assert!(parent != self.id);
+
         {
             let mut inner = self.inner.lock().unwrap();
             let inner: &mut NodeInner = &mut inner;
@@ -309,65 +330,81 @@ impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: 'static + 
     }
 
     fn add_connections(&self, target: &mut HashSet<Connection>) {
-        self.root.as_ref().map(|root| target.insert(root.clone()));
-        for c in self.inner.lock().unwrap().conns.iter() {
+        let inner = self.inner.lock().unwrap();
+        inner.root.as_ref().map(|root| {
+            target.insert(root.clone())
+        });
+        for c in inner.conns.iter() {
             target.insert(c.clone());
         }
     }
 }
 
 impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: Tag> Node<T, G> {
-	pub fn as_ref<'a>(&'a self) -> Borrow<'a, T> {
-		Borrow { x: self.val.lock().unwrap() }
-	}
+    pub fn as_ref<'a>(&'a self) -> Borrow<'a, T> {
+        Borrow { x: self.val.lock().unwrap() }
+    }
 
-	pub fn as_mut<'a>(&'a mut self) -> BorrowMut<'a, T> {
-		BorrowMut { x: self.val.lock().unwrap() }
-	}
+    pub fn as_mut<'a>(&'a mut self) -> BorrowMut<'a, T> {
+        BorrowMut { x: self.val.lock().unwrap() }
+    }
 }
 
 pub struct Borrow<'a, T: 'a> {
-	x: MutexGuard<'a, T>,
+    x: MutexGuard<'a, T>,
 }
 
 pub struct BorrowMut<'a, T: 'a> {
-	x: MutexGuard<'a, T>,
+    x: MutexGuard<'a, T>,
 }
 
 impl<'a, T: Default> Deref for Borrow<'a, T> {
-	type Target = T;
+    type Target = T;
 
-	fn deref(&self) -> &T {
-		&self.x
-	}
+    fn deref(&self) -> &T {
+        &self.x
+    }
 }
 
 impl<'a, T: Default> Deref for BorrowMut<'a, T> {
-	type Target = T;
+    type Target = T;
 
-	fn deref(&self) -> &T {
-		&self.x
-	}
+    fn deref(&self) -> &T {
+        &self.x
+    }
 }
 
 impl<'a, T: Default> DerefMut for BorrowMut<'a, T> {
-	fn deref_mut(&mut self) -> &mut T {
-		&mut self.x
-	}
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.x
+    }
 }
 
-impl<T: Tag> NodeContext<T> {
-    pub fn new() -> NodeContext<T> {
+impl<G: Tag> NodeContext<G> {
+    pub fn new() -> NodeContext<G> {
         Self {
-            nodes: HashMap::new()
+            nodes: HashMap::new(),
         }
     }
 
-    pub fn get(&self, id: u32) -> Option<Box<NodeBase<T>>> {
+    pub fn get(&self, id: u32) -> Option<Box<NodeBase<G>>> {
         self.nodes.get(&id).map(|node| node.as_box())
     }
 
-    pub fn insert(&mut self, id: u32, node: Box<NodeBase<T>>) {
-        self.nodes.insert(id, node);
+    pub fn insert<T>(&mut self, id: u32, node: Node<T,G>) where
+        T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>
+    {
+        // only keep weak nodes in the node context so we can remove them
+        //  when they're not needed anymore
+        self.nodes.insert(id, Box::new(WeakNode {
+            id: node.id.clone(),
+            context: node.context.clone(),
+            inner: Arc::downgrade(&node.inner),
+            val: Arc::downgrade(&node.val),
+        }));
+    }
+
+    pub fn gc(&mut self, id: u32) {
+        self.nodes.remove(&id);
     }
 }

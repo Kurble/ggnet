@@ -79,12 +79,15 @@ impl Connection {
                 let mut packet = Packet::default();
                 let result = packet.reflect(&mut de);
                 if result.is_err() {
+                    println!("receive error {:?}", result.err());
                     break;
                 }
                 if packet.magic != PACKET_MAGIC {
+                    println!("magic mismatch");
                     break;
                 }
                 if sender.send(packet).is_err() {
+                    println!("channel error");
                     break;
                 }
             }
@@ -112,6 +115,7 @@ impl Connection {
         };
 
         if x().is_err() {
+            println!("send error");
             self.alive.swap(false, AtomicOrdering::Relaxed);
         }
     }

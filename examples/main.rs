@@ -1,6 +1,7 @@
 #[macro_use] extern crate ggnet_derive;
 #[macro_use] extern crate ggnet;
 
+use std::sync::mpsc::channel;
 use std::any::Any;
 use std::env;
 use std::io::Cursor;
@@ -64,23 +65,42 @@ pub fn client_main() {
 
     server.hello("brams client".into());
 
+    let (tx, rx) = channel();
+
+    thread::spawn(move || {
+        loop {
+            let mut buffer = String::new();
+            stdin().read_line(&mut buffer).unwrap();
+            buffer.pop();
+            tx.send(buffer).unwrap();
+        }
+    });
+
+    let mut chats_len = 0;
+
     loop {
         thread::sleep(time::Duration::from_millis(100));
         server.update();
 
-        println!("Chat room: {}", server.as_ref().title);
-        println!("------------------------------------");
         {
             let server = server.as_ref();
-            for msg in server.chat.as_ref().chats.iter() {
-                println!("{}", msg);
+
+            if chats_len != server.chat.as_ref().chats.len() {
+                chats_len = server.chat.as_ref().chats.len();
+
+                println!("\n\n\n\n\n\n\n\n");
+                println!("Chat room: {}", server.title);
+                println!("------------------------------------");
+                
+                for msg in server.chat.as_ref().chats.iter() {
+                    println!("{}", msg);
+                }
             }
         }
 
-        let mut buffer = String::new();
-        stdin().read_line(&mut buffer).unwrap();
-
-        server.as_mut().chat.chat(buffer);
+        for cmd in rx.try_recv() {
+            server.as_mut().chat.chat(cmd);
+        }
     }
 }
 
@@ -111,13 +131,15 @@ pub fn server_main() {
         }
 
         listener.accept().map(|(stream, _)| {
-            server.add_client(
-                stream.try_clone().unwrap(), 
-                stream.try_clone().unwrap(),
-                ExampleNode {
-                    title: String::from("Example Server"),
-                    chat: chat.clone(),
-                });
+            if stream.set_nonblocking(false).is_ok() {
+                server.add_client(
+                    stream.try_clone().unwrap(), 
+                    stream.try_clone().unwrap(),
+                    ExampleNode {
+                        title: String::from("Example Server"),
+                        chat: chat.clone(),
+                    });
+            }
         }).ok();
 
         server.update();

@@ -344,7 +344,7 @@ encodable!{ bool }
 encodable!{ String }
 
 fn acquire<T: Any + Default>(val: Option<Box<Any>>) -> T {
-    val.and_then(|v| v.downcast().ok().and_then(|b| *b)).unwrap_or(T::default())
+    val.and_then(|v| Some(*v.downcast().unwrap())).unwrap_or(T::default())
 }
 
 impl<V, T> Reflect<Updater<V>> for Vec<T> where 
