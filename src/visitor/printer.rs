@@ -27,6 +27,8 @@ macro_rules! encodable {
     )
 }
 
+encodable!{ u8 }
+encodable!{ i8 }
 encodable!{ u16 }
 encodable!{ i16 }
 encodable!{ u32 }

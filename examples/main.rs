@@ -19,8 +19,34 @@ pub struct ExampleNode<T: Tag> {
 }
 
 #[derive(Reflect, Default)]
+pub struct ExampleTuple(u32, u8, u16);
+
+#[derive(Reflect, Default)]
 pub struct ExampleChatLog {
     pub chats: Vec<String>,
+    pub test: ExampleEnum,
+    pub tup: ExampleTuple,
+}
+
+#[derive(Reflect,Debug)]
+pub enum ExampleEnum {
+    VersionCheck,
+    Login {
+        message: String,
+    },
+    CharacterSelect {
+        characters: Vec<String>,
+    },
+    Room {
+        room: u32,
+    },
+    Exit(String),
+}
+
+impl Default for ExampleEnum {
+    fn default() -> Self {
+        ExampleEnum::VersionCheck
+    }
 }
 
 rpc! {
@@ -39,6 +65,9 @@ rpc! {
         rpc chat(x: Node, msg: String) {
             println!("chat {}", msg);
             x.member_vec_push("chats".into(), msg);
+
+            x.as_mut().test = ExampleEnum::Exit("we're done".into());
+            x.member_modified("test".into());
         }
     }
 }
@@ -91,6 +120,7 @@ pub fn client_main() {
                 println!("\n\n\n\n\n\n\n\n");
                 println!("Chat room: {}", server.title);
                 println!("------------------------------------");
+                println!("dbg = {:?}", &server.chat.as_ref().test);
                 
                 for msg in server.chat.as_ref().chats.iter() {
                     println!("{}", msg);
@@ -119,6 +149,8 @@ pub fn server_main() {
 
     let chat = server.make_node(ExampleChatLog {
         chats: vec![],
+        test: ExampleEnum::Room { room: 2 },
+        tup: ExampleTuple(0, 1, 2),
     });
 
     loop {
