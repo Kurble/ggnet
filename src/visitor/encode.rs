@@ -16,6 +16,7 @@ pub fn encode<W: Write, T: ToStream<W>>(stream: &mut W, val: &T) -> Result<(), S
 
 #[derive(Debug)]
 pub enum SerializeError {
+    Custom(std::string::String),
 	IOError(std::io::Error),
     UTFError(std::string::FromUtf8Error),
 }

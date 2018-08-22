@@ -19,8 +19,11 @@ struct Conn {
     r: Receiver<Packet>,
 }
 
+/// A `Connection`. This struct wraps around a `Write` and `Read` implementation that should be
+///  mapped to a tcp socket.
 pub struct Connection {
     inner: Arc<Mutex<Conn>>,
+    err: Arc<Mutex<Option<SerializeError>>>,
     alive: Arc<AtomicBool>,
     id: usize,
 }
@@ -55,6 +58,7 @@ impl Clone for Connection {
     fn clone(&self) -> Self {
         Connection {
             inner: self.inner.clone(),
+            err: self.err.clone(),
             alive: self.alive.clone(),
             id: self.id,
         }
@@ -62,14 +66,20 @@ impl Clone for Connection {
 }
 
 impl Connection {
+    /// Initialize a new `Connection`. 
+    /// When used for a `Client<T>` the `id` parameter can be anything, it is only used in `Server`.
+    /// The id is what determines ordering and equality for `Connection`.
     pub fn new<W: 'static +  Write, R: 'static +  Read + Send>(w: W, r: R, id: usize) -> Self {
         let (sender, receiver) = channel();
 
+        let inner = Arc::new(Mutex::new(Conn { w: Serializer::new(Box::new(w)), r: receiver }));
         let alive = Arc::new(AtomicBool::new(true));
+        let err = Arc::new(Mutex::new(None));
 
         let result = Connection{
-            inner: Arc::new(Mutex::new(Conn { w: Serializer::new(Box::new(w)), r: receiver })),
+            inner: inner.clone(),
             alive: alive.clone(),
+            err: err.clone(),
             id
         };
 
@@ -79,15 +89,15 @@ impl Connection {
                 let mut packet = Packet::default();
                 let result = packet.reflect(&mut de);
                 if result.is_err() {
-                    println!("receive error {:?}", result.err());
+                    *err.lock().unwrap() = Some(result.err().unwrap());
                     break;
                 }
                 if packet.magic != PACKET_MAGIC {
-                    println!("magic mismatch");
+                    *err.lock().unwrap() = Some(SerializeError::Custom("Corrupt Packet".into()));
                     break;
                 }
                 if sender.send(packet).is_err() {
-                    println!("channel error");
+                    *err.lock().unwrap() = Some(SerializeError::Custom("Channel Error".into()));
                     break;
                 }
             }
@@ -98,10 +108,19 @@ impl Connection {
         result     
     }
 
-    pub fn is_alive(&self) -> bool {
-        self.alive.load(AtomicOrdering::Relaxed)
+    /// When one of the wrapped `Write` or `Read` implementations return an error
+    ///  the `Connection` is flagged as dead internally. This function can be used to check if the
+    /// `Connection` is still alive. 
+    /// This function will return `Ok(())` if the `Connection` is alive, or an `Err(_)` if it isn't.
+    pub fn status(&self) -> Result<(), SerializeError> {
+        if self.alive.load(AtomicOrdering::Relaxed) {
+            Ok(())
+        } else {
+            Err(self.err.lock().unwrap().take().unwrap())
+        }
     }
 
+    /// Send a message destined for the `Node` with id `node` over the `Connection`.
     pub fn send(&self, mut node: u32, data: &[u8]) {
         let mut conn = self.inner.lock().unwrap();
 
@@ -114,19 +133,23 @@ impl Connection {
             Ok(())
         };
 
-        if x().is_err() {
-            println!("send error");
+        let result = x();
+        if result.is_err() {
+            *self.err.lock().unwrap() = result.err();
             self.alive.swap(false, AtomicOrdering::Relaxed);
         }
     }
 
+    /// Returns `Some(Packet)` if there is one available now, otherwise returns `None`.
     pub fn recv(&self) -> Option<Packet> {
         let conn = self.inner.lock().unwrap();
         conn.r.try_recv().ok()
     }
 
-    pub fn recv_blocking(&self) -> Packet {
+    /// Blocks until a `Packet` is available and then returns `Some(Packet)`. 
+    /// If the `Connection` dies while blocking, this function will return `None`.
+    pub fn recv_blocking(&self) -> Option<Packet> {
         let conn = self.inner.lock().unwrap();
-        conn.r.recv().unwrap()
+        conn.r.recv().ok()
     }
 }

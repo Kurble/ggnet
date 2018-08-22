@@ -90,7 +90,7 @@ pub fn client_main() {
 
     let mut server = Client::<ExampleNode<TagClient>>::new(
         Connection::new(stream.try_clone().unwrap(), stream.try_clone().unwrap(),0)
-    );
+    ).unwrap();
 
     server.hello("brams client".into());
 
