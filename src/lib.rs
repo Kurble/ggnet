@@ -24,10 +24,18 @@ pub use rpc::*;
 pub use connection::*;
 pub use server::*;
 
+/// Types that implement this trait can be reflected using the Visitor specified in V.
+/// The implementor should call `Visitor::visit(..)` for named members,
+///  while `Reflect::reflect(..)` will suffice for unnamed members.
 pub trait Reflect<V: Visitor>: Default {
-    fn reflect(&mut self, &mut V) -> Result<(), SerializeError>;
+	/// Submits the data of `self` to the supplied visitor.
+    fn reflect(&mut self, visitor: &mut V) -> Result<(), SerializeError>;
 }
 
+/// Defines a visitor that visits the contents of a type that implements `Reflect<..>`.
 pub trait Visitor: Sized {
+	/// Visit a named value. Should call `Reflect::reflect(..)` internally.
+	/// If a visitor wants to do some kind of smart behaviour this function can be used to
+	///  discriminate values based on their name.
     fn visit<T: Reflect<Self>>(&mut self, name: &str, val: &mut T) -> Result<(), SerializeError>;
 }
