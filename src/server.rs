@@ -3,7 +3,7 @@ use std::ops::{Deref,DerefMut};
 use std::io::Cursor;
 use visitor::updater::CallUpdate;
 use visitor::refresher::Refresher;
-use node::{NodeBase, NodeContext};
+use node::{NodeBase, NodeContext, NewNode};
 
 /// Manages `Connection`s and `Node`s. Does not manage sockets, 
 /// this is up to the user as ggnet is net API agnostic.

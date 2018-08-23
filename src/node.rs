@@ -45,6 +45,12 @@ pub trait NodeBase<T: Tag>: Any {
     fn add_connections(&self, target: &mut HashSet<Connection>); 
 }
 
+/// Private functions for `Node<T,G>`
+pub trait NewNode<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: Tag> {
+    fn new(id: u32, val: T, context: Arc<Mutex<NodeContext<G>>>) -> Self;
+    fn set_root(&mut self, conn: Connection);
+}
+
 pub struct NodeContext<T: Tag> {
     nodes: HashMap<u32, Box<NodeBase<T>>>,
 }
@@ -53,6 +59,7 @@ struct NodeInner {
     refs: HashSet<u32>,
     conns: HashSet<Connection>,
     root: Option<Connection>,
+    changed: bool,
 }
 
 /// A node. Entry point for server <--> client communication. 
@@ -71,7 +78,10 @@ struct WeakNode<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G:
     inner: Weak<Mutex<NodeInner>>,
 }
 
-impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: 'static + Tag> Drop for Node<T, G> {
+impl<T, G> Drop for Node<T, G> where
+    T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, 
+    G: Tag 
+{
     fn drop(&mut self) {
         if self.owner.is_some() {
             let owner = self.owner.unwrap();
@@ -86,7 +96,10 @@ impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: 'static + 
     }
 }
 
-impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: Tag> Clone for Node<T, G> {
+impl<T, G> Clone for Node<T, G> where
+    T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, 
+    G: Tag 
+{
     fn clone(&self) -> Self {
         Self {
             owner: None,
@@ -98,7 +111,10 @@ impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: Tag> Clone
     }
 }
 
-impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: Tag> Default for Node<T, G> {
+impl<T, G> Default for Node<T, G> where
+    T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, 
+    G: Tag 
+{
     fn default() -> Self {
         Self {
             owner: None,
@@ -109,8 +125,35 @@ impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: Tag> Defau
                 refs: HashSet::new(),
                 conns: HashSet::new(),
                 root: None,
+                changed: false,
             })),
         }
+    }
+}
+
+impl<T, G> NewNode<T,G> for Node<T,G> where
+    T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>,
+    G: Tag
+{
+    fn new(id: u32, val: T, context: Arc<Mutex<NodeContext<G>>>) -> Self {
+        Self {
+            owner: None,
+            id,
+            context: Some(context),
+            val: Arc::new(Mutex::new(val)),
+            inner: Arc::new(Mutex::new(NodeInner{
+                refs: HashSet::new(),
+                conns: HashSet::new(),
+                root: None,
+                changed: false,
+            })),
+        }
+    }
+
+    fn set_root(&mut self, conn: Connection) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.root = Some(conn.clone());
+        inner.conns.insert(conn.clone());
     }
 }
 
@@ -213,25 +256,24 @@ impl<T, G> Reflect<Refresher> for Node<T,G> where
     }
 }
 
-impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: Tag> Node<T, G> {
-    pub fn new(id: u32, val: T, context: Arc<Mutex<NodeContext<G>>>) -> Self {
-        Self {
-            owner: None,
-            id,
-            context: Some(context),
-            val: Arc::new(Mutex::new(val)),
-            inner: Arc::new(Mutex::new(NodeInner{
-                refs: HashSet::new(),
-                conns: HashSet::new(),
-                root: None,
-            })),
-        }
+impl<T, G> Node<T, G> where
+    T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, 
+    G: Tag 
+{
+    /// Returns `true` if the contained value of this node has had any updates since the last call
+    ///  of this function. Returns `false` otherwise.
+    pub fn changed(&self) -> bool {
+        replace(&mut self.inner.lock().unwrap().changed, false)
     }
 
-    pub fn set_root(&mut self, conn: Connection) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.root = Some(conn.clone());
-        inner.conns.insert(conn.clone());
+    /// Borrow the inner value by reference.
+    pub fn as_ref<'a>(&'a self) -> Borrow<'a, T> {
+        Borrow { x: self.val.lock().unwrap() }
+    }
+
+    /// Borrow the inner value by mutable reference.
+    pub fn as_mut<'a>(&'a mut self) -> BorrowMut<'a, T> {
+        BorrowMut { x: self.val.lock().unwrap() }
     }
 
     fn inner_clone(&self) -> Box<Node<T, G>> {
@@ -289,7 +331,9 @@ impl<T, G> NodeBase<G> for Node<T, G> where
     fn id(&self) -> u32 { self.id }
 
     fn send(&self, msg: BufferSerializer) {
-        for conn in self.inner.lock().unwrap().conns.iter() {
+        let mut inner = self.inner.lock().unwrap();
+        inner.changed = true;
+        for conn in inner.conns.iter() {
             conn.send(self.id, msg.writer.as_slice());
         }
     }
@@ -300,6 +344,7 @@ impl<T, G> NodeBase<G> for Node<T, G> where
 
     fn recv_update<'a>(&mut self, msg: BufferDeserializer) {
         self.val.lock().unwrap().call_upd(msg);
+        self.inner.lock().unwrap().changed = true;
     }
 
     fn add_ref(&mut self, parent: u32) {
@@ -343,16 +388,6 @@ impl<T, G> NodeBase<G> for Node<T, G> where
         for c in inner.conns.iter() {
             target.insert(c.clone());
         }
-    }
-}
-
-impl<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: Tag> Node<T, G> {
-    pub fn as_ref<'a>(&'a self) -> Borrow<'a, T> {
-        Borrow { x: self.val.lock().unwrap() }
-    }
-
-    pub fn as_mut<'a>(&'a mut self) -> BorrowMut<'a, T> {
-        BorrowMut { x: self.val.lock().unwrap() }
     }
 }
 

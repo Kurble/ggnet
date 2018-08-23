@@ -105,8 +105,6 @@ pub fn client_main() {
         }
     });
 
-    let mut chats_len = 0;
-
     loop {
         thread::sleep(time::Duration::from_millis(100));
         server.update();
@@ -114,9 +112,7 @@ pub fn client_main() {
         {
             let server = server.as_ref();
 
-            if chats_len != server.chat.as_ref().chats.len() {
-                chats_len = server.chat.as_ref().chats.len();
-
+            if server.chat.changed() {
                 println!("\n\n\n\n\n\n\n\n");
                 println!("Chat room: {}", server.title);
                 println!("------------------------------------");
