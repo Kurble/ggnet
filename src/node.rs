@@ -11,11 +11,15 @@ pub type BufferSerializer = Serializer<Vec<u8>>;
 
 pub type BufferDeserializer = Deserializer<Cursor<Vec<u8>>>;
 
+/// Tags used to specialize `Node` implementations between server sided and client sided.
+/// See `TagServer` and `TagClient`.
 pub trait Tag: 'static + Default { }
 
+/// Tag used for `Node`s on the `Server`.
 #[derive(Default)]
 pub struct TagServer;
 
+/// Tag used for `Node`s on the `Client`.
 #[derive(Default)]
 pub struct TagClient;
 
@@ -28,6 +32,7 @@ impl Tag for TagClient { }
 
 impl Tag for TagAgnostic { }
 
+/// Trait for dynamic dispatch to `Node`s.
 pub trait NodeBase<T: Tag>: Any {
     fn as_box(&self) -> Box<NodeBase<T>>;
     fn as_any(&self) -> &Any;
@@ -50,6 +55,7 @@ struct NodeInner {
     root: Option<Connection>,
 }
 
+/// A node. Entry point for server <--> client communication. 
 pub struct Node<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, G: 'static + Tag> {
     owner: Option<u32>,
     id: u32,
@@ -113,7 +119,7 @@ impl<W, T, G> Reflect<Serializer<W>> for Node<T,G> where
     T: 'static + CallUpdate + CallRPC + Reflect<Serializer<W>> + Reflect<Refresher>,
     G: 'static + Tag
 {
-    fn reflect(&mut self, visit: &mut Serializer<W>) -> Result<(), SerializeError> {
+    fn reflect(&mut self, visit: &mut Serializer<W>) -> Result<(), Error> {
         self.id.reflect(visit)?;
 
         self.owner = visit.current_node.clone();
@@ -135,7 +141,7 @@ impl<R, T, G> Reflect<Deserializer<R>> for Node<T,G> where
     T: 'static + CallUpdate + CallRPC + Reflect<Deserializer<R>> + Reflect<Refresher>,
     G: Tag,
 {
-    fn reflect(&mut self, visit: &mut Deserializer<R>) -> Result<(), SerializeError> {
+    fn reflect(&mut self, visit: &mut Deserializer<R>) -> Result<(), Error> {
         self.id.reflect(visit)?;
 
         if self.context.is_none() {
@@ -173,7 +179,7 @@ impl<V, T, G> Reflect<Updater<V>> for Node<T, G> where
     T: 'static + CallUpdate + CallRPC + Reflect<Updater<V>> + Reflect<Refresher>,
     G: Tag,
 {
-    fn reflect(&mut self, visit: &mut Updater<V>) -> Result<(), SerializeError> {
+    fn reflect(&mut self, visit: &mut Updater<V>) -> Result<(), Error> {
         self.val.lock().unwrap().reflect(visit)?;
         Ok(())
     }
@@ -183,7 +189,7 @@ impl<T, G> Reflect<Refresher> for Node<T,G> where
     T: 'static + CallUpdate + CallRPC + Reflect<Refresher>,
     G: 'static + Tag
 {
-    fn reflect(&mut self, visit: &mut Refresher) -> Result<(), SerializeError> {
+    fn reflect(&mut self, visit: &mut Refresher) -> Result<(), Error> {
         {
             let mut inner = self.inner.lock().unwrap();
             let inner: &mut NodeInner = &mut inner;

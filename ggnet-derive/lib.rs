@@ -51,7 +51,7 @@ fn impl_reflect_struct(ast: &syn::DeriveInput) -> TokenStream {
 
     let tokens = quote! {
         impl #impl_generics Reflect<V> for #name #type_generics #where_clause {
-            fn reflect(&mut self, visitor: &mut V) -> Result<(), SerializeError> {
+            fn reflect(&mut self, visitor: &mut V) -> Result<(), Error> {
                 #(visitor.visit(stringify!(#field_str), &mut self.#field_id)?;)*
                 Ok(())
             }
@@ -112,7 +112,7 @@ fn impl_reflect_enum(ast: &syn::DeriveInput) -> TokenStream {
                         
                         construct_variants.push(quote!{{
                             #(let #fields = {
-                                let mut x: #types = Default::default();
+                                let mut x: #types = ::std::default::Default::default();
                                 visitor.visit(stringify!(#names4), &mut x)?;
                                 x
                             };)*
@@ -150,7 +150,7 @@ fn impl_reflect_enum(ast: &syn::DeriveInput) -> TokenStream {
 
                         construct_variants.push(quote!{{
                             #(let #names3 = {
-                                let mut x: #types2 = Default::default();
+                                let mut x: #types2 = ::std::default::Default::default();
                                 x.reflect(visitor)?;
                                 x
                             };)*
@@ -183,7 +183,7 @@ fn impl_reflect_enum(ast: &syn::DeriveInput) -> TokenStream {
 
     let tokens = quote! {
         impl #impl_generics Reflect<V> for #name #type_generics #where_clause {
-            fn reflect(&mut self, visitor: &mut V) -> Result<(), SerializeError> {
+            fn reflect(&mut self, visitor: &mut V) -> Result<(), Error> {
                 let mut val: u8 = match self {
                     #(&mut #variants => #encode_indices,)*
                 };

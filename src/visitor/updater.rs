@@ -1,7 +1,8 @@
+use super::*;
 use std::io::Cursor;
 use std::collections::HashMap;
 use std::any::Any;
-use super::*;
+use node::{BufferSerializer, BufferDeserializer, NodeBase};
 
 #[derive(Clone, Copy, PartialEq, Eq, Reflect)]
 pub enum UpdateOp {
@@ -148,11 +149,15 @@ impl<U: Visitor> Updater<U> {
     }
 }
 
+/// This trait exposes functions that can be used to notify clients op updates to the data model of
+///  a `Node`. The update messages generated will be sent to all connections that hold a reference
+///  to the `Node`.
 pub trait NodeServerExt: 
     NodeBase<TagServer> + 
     Reflect<Serializer<Vec<u8>>> +
     Reflect<Updater<Serializer<Vec<u8>>>>
 {
+    /// Update all members.
     fn resync(&mut self) {
         let mut op = UpdateOp::Replace;
         let mut ser = BufferSerializer::with_current_node(vec![], self.id());
@@ -164,6 +169,7 @@ pub trait NodeServerExt:
         self.send(updater.unwrap());
     }
 
+    /// Update a single member with name `tag`.
     fn member_modified(&mut self, mut tag: String) {
         let mut op = UpdateOp::Update;
         let mut ser = BufferSerializer::with_current_node(vec![], self.id());
@@ -175,6 +181,7 @@ pub trait NodeServerExt:
         self.send(updater.unwrap());
     }
 
+    /// Push a new element to the `Vec<T>` member with name `tag`.
     fn member_vec_push<T>(&mut self, mut tag: String, val: T) where
         T: Reflect<Serializer<Vec<u8>>> + Any
     {
@@ -188,6 +195,7 @@ pub trait NodeServerExt:
         self.send(updater.unwrap());
     }
 
+    /// Insert a new element to the `Vec<T>` member with name `tag` at position `index`.
     fn member_vec_insert<T>(&mut self, mut tag: String, index: usize, val: T) where
         T: Reflect<Serializer<Vec<u8>>> + Any
     {
@@ -201,6 +209,7 @@ pub trait NodeServerExt:
         self.send(updater.unwrap());
     }
 
+    /// Remove an element from the `Vec<T>` member with name `tag` at position `index`.
     fn member_vec_remove(&mut self, mut tag: String, index: usize) {
         let mut op = UpdateOp::VecRemove;
         let mut ser = BufferSerializer::with_current_node(vec![], self.id());
@@ -212,6 +221,7 @@ pub trait NodeServerExt:
         self.send(updater.unwrap());
     }
 
+    /// Clear the `Vec<T>` member with name `tag`.
     fn member_vec_clear(&mut self, mut tag: String) {
         let mut op = UpdateOp::VecClear;
         let mut ser = BufferSerializer::with_current_node(vec![], self.id());
@@ -223,6 +233,7 @@ pub trait NodeServerExt:
         self.send(updater.unwrap());
     }
 
+    /// Insert a new element to the `HashMap<K,V>` member with name `tag`.
     fn member_map_insert<K, V>(&mut self, mut tag: String, key: K, val: V) where 
         K: Reflect<Serializer<Vec<u8>>> + Eq + Hash + Clone + Any,
         V: Reflect<Serializer<Vec<u8>>> + Any
@@ -237,6 +248,7 @@ pub trait NodeServerExt:
         self.send(updater.unwrap());
     }
 
+    /// Remove an element from the `Vec<T>` member with name `tag` with key `key`.
     fn member_map_remove<K>(&mut self, mut tag: String, key: K) where
         K: Reflect<Serializer<Vec<u8>>> + Eq + Hash + Clone + Any
     {
@@ -250,6 +262,7 @@ pub trait NodeServerExt:
         self.send(updater.unwrap());
     }
 
+    /// Clear the `HashMap<K,V>` member with name `tag`.
     fn member_map_clear(&mut self, mut tag: String) {
         let mut op = UpdateOp::MapClear;
         let mut ser = BufferSerializer::with_current_node(vec![], self.id());
@@ -268,14 +281,14 @@ impl<T> NodeServerExt for T where
 }
 
 pub trait CallUpdate {
-    fn call_upd(&mut self, msg: Deserializer<Cursor<Vec<u8>>>);
+    fn call_upd(&mut self, msg: BufferDeserializer);
 }
 
 impl<T> CallUpdate for T where
     T: Reflect<Deserializer<Cursor<Vec<u8>>>> + 
        Reflect<Updater<Deserializer<Cursor<Vec<u8>>>>>
 {
-    fn call_upd(&mut self, mut msg: Deserializer<Cursor<Vec<u8>>>) {
+    fn call_upd(&mut self, mut msg: BufferDeserializer) {
         let mut op = UpdateOp::default();
         let mut tag = String::default();
 
@@ -298,7 +311,7 @@ impl<T> CallUpdate for T where
 }
 
 impl<V: Visitor> Visitor for Updater<V> {
-    fn visit<T: Reflect<Updater<V>>>(&mut self, name: &str, val: &mut T) -> Result<(), SerializeError> {
+    fn visit<T: Reflect<Updater<V>>>(&mut self, name: &str, val: &mut T) -> Result<(), Error> {
         if self.op == UpdateOp::Replace {
             val.reflect(self)?;
         } else if self.nest > 0 {
@@ -322,7 +335,7 @@ impl<V: Visitor> Visitor for Updater<V> {
 macro_rules! encodable {
     ($t:ty) => (
         impl<V: Visitor> Reflect<Updater<V>> for $t where $t: Reflect<V> {
-            fn reflect(&mut self, visit: &mut Updater<V>) -> Result<(), SerializeError> {
+            fn reflect(&mut self, visit: &mut Updater<V>) -> Result<(), Error> {
                 assert!(visit.op == UpdateOp::Update || visit.op == UpdateOp::Replace);
                 Ok(self.reflect(&mut visit.ser)?)
             }
@@ -353,7 +366,7 @@ impl<V, T> Reflect<Updater<V>> for Vec<T> where
     Vec<T>: Reflect<V>,
     u32: Reflect<V>,
 {
-    fn reflect(&mut self, visit: &mut Updater<V>) -> Result<(), SerializeError> {
+    fn reflect(&mut self, visit: &mut Updater<V>) -> Result<(), Error> {
         match visit.op {
             UpdateOp::Update | UpdateOp::Replace => {
                 self.reflect(&mut visit.ser)?;
@@ -399,7 +412,7 @@ impl<U, K, V> Reflect<Updater<U>> for HashMap<K, V> where
     V: Reflect<U> + Any + 'static,
     HashMap<K, V>: Reflect<U>,
 {
-    fn reflect(&mut self, visit: &mut Updater<U>) -> Result<(), SerializeError> {
+    fn reflect(&mut self, visit: &mut Updater<U>) -> Result<(), Error> {
         match visit.op {
             UpdateOp::Update | UpdateOp::Replace => {
                 self.reflect(&mut visit.ser)?;

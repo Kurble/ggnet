@@ -1,6 +1,7 @@
+use super::*;
 use std::hash::Hash;
 use std::collections::HashMap;
-use super::*;
+use node::NodeContext;
 
 pub struct Deserializer<R: Read> {
     pub reader: R,
@@ -34,7 +35,7 @@ impl<R: Read> Deserializer<R> {
 }
 
 impl<R: Read> Visitor for Deserializer<R> {
-    fn visit<T: Reflect<Deserializer<R>>>(&mut self, _name: &str, val: &mut T) -> Result<(), SerializeError> {
+    fn visit<T: Reflect<Deserializer<R>>>(&mut self, _name: &str, val: &mut T) -> Result<(), Error> {
         Ok(val.reflect(self)?)
     }
 }
@@ -42,7 +43,7 @@ impl<R: Read> Visitor for Deserializer<R> {
 macro_rules! encodable {
     ($t:ty) => (
         impl<R: Read> Reflect<Deserializer<R>> for $t {
-            fn reflect(&mut self, visit: &mut Deserializer<R>) -> Result<(), SerializeError> {
+            fn reflect(&mut self, visit: &mut Deserializer<R>) -> Result<(), Error> {
                 *self = decode(&mut visit.reader)?;
                 Ok(())
             }
@@ -67,7 +68,7 @@ impl<R, T> Reflect<Deserializer<R>> for Vec<T> where
     R: Read,
     T: Reflect<Deserializer<R>>,
 {
-    fn reflect(&mut self, visit: &mut Deserializer<R>) -> Result<(), SerializeError> {
+    fn reflect(&mut self, visit: &mut Deserializer<R>) -> Result<(), Error> {
         let mut len = 0u32;
         len.reflect(visit)?;
         self.clear();
@@ -84,7 +85,7 @@ impl<R, K, V> Reflect<Deserializer<R>> for HashMap<K, V> where
     K: Reflect<Deserializer<R>> + Eq + Hash + Clone,
     V: Reflect<Deserializer<R>>,
 {
-    fn reflect(&mut self, visit: &mut Deserializer<R>) -> Result<(), SerializeError> {
+    fn reflect(&mut self, visit: &mut Deserializer<R>) -> Result<(), Error> {
         let mut len = 0u32;
         len.reflect(visit)?;
         self.clear();

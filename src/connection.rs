@@ -23,7 +23,7 @@ struct Conn {
 ///  mapped to a tcp socket.
 pub struct Connection {
     inner: Arc<Mutex<Conn>>,
-    err: Arc<Mutex<Option<SerializeError>>>,
+    err: Arc<Mutex<Option<Error>>>,
     alive: Arc<AtomicBool>,
     id: usize,
 }
@@ -93,11 +93,11 @@ impl Connection {
                     break;
                 }
                 if packet.magic != PACKET_MAGIC {
-                    *err.lock().unwrap() = Some(SerializeError::Custom("Corrupt Packet".into()));
+                    *err.lock().unwrap() = Some(Error::Custom("Corrupt Packet".into()));
                     break;
                 }
                 if sender.send(packet).is_err() {
-                    *err.lock().unwrap() = Some(SerializeError::Custom("Channel Error".into()));
+                    *err.lock().unwrap() = Some(Error::Custom("Channel Error".into()));
                     break;
                 }
             }
@@ -112,7 +112,7 @@ impl Connection {
     ///  the `Connection` is flagged as dead internally. This function can be used to check if the
     /// `Connection` is still alive. 
     /// This function will return `Ok(())` if the `Connection` is alive, or an `Err(_)` if it isn't.
-    pub fn status(&self) -> Result<(), SerializeError> {
+    pub fn status(&self) -> Result<(), Error> {
         if self.alive.load(AtomicOrdering::Relaxed) {
             Ok(())
         } else {
@@ -124,7 +124,7 @@ impl Connection {
     pub fn send(&self, mut node: u32, data: &[u8]) {
         let mut conn = self.inner.lock().unwrap();
 
-        let mut x = move || -> Result<(), SerializeError> {
+        let mut x = move || -> Result<(), Error> {
             node.reflect(&mut conn.w)?;
             PACKET_MAGIC.reflect(&mut conn.w)?;
             (data.len() as u32).reflect(&mut conn.w)?;

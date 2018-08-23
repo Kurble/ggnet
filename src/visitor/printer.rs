@@ -6,7 +6,7 @@ pub struct Printer {
 }
 
 impl Visitor for Printer {
-    fn visit<T: Reflect<Printer>>(&mut self, name: &str, val: &mut T) -> Result<(), SerializeError> {
+    fn visit<T: Reflect<Printer>>(&mut self, name: &str, val: &mut T) -> Result<(), Error> {
         self.indent.push_str("\t");
         self.result.push_str(&format!("{} {{\n{}", name, self.indent));
         val.reflect(self)?;
@@ -19,7 +19,7 @@ impl Visitor for Printer {
 macro_rules! encodable {
     ($t:ty) => (
         impl Reflect<Printer> for $t {
-            fn reflect(&mut self, visit: &mut Printer) -> Result<(), SerializeError> {
+            fn reflect(&mut self, visit: &mut Printer) -> Result<(), Error> {
                 visit.result.push_str(&format!("{}, ", *self));
                 Ok(())
             }
@@ -41,7 +41,7 @@ encodable!{ bool }
 encodable!{ String }
 
 impl<T: Reflect<Printer>> Reflect<Printer> for Vec<T> {
-    fn reflect(&mut self, visit: &mut Printer) -> Result<(), SerializeError> {
+    fn reflect(&mut self, visit: &mut Printer) -> Result<(), Error> {
         (self.len() as u32).reflect(visit)?;
         for e in self.iter_mut() {
             e.reflect(visit)?;

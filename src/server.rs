@@ -3,6 +3,7 @@ use std::ops::{Deref,DerefMut};
 use std::io::Cursor;
 use visitor::updater::CallUpdate;
 use visitor::refresher::Refresher;
+use node::{NodeBase, NodeContext};
 
 /// Manages `Connection`s and `Node`s. Does not manage sockets, 
 /// this is up to the user as ggnet is net API agnostic.
@@ -103,20 +104,19 @@ impl<T> Client<T> where
     /// Initialize a new connection to the `Server`. 
     /// The supplied connection should be a live connection,
     ///  but it should not have been used for any ggnet traffic yet. 
-    pub fn new(conn: Connection) -> Result<Self, SerializeError> {
+    pub fn new(conn: Connection) -> Result<Self, Error> {
         let context = Arc::new(Mutex::new(NodeContext::new()));
 
         let packet = conn.recv_blocking();
         let packet = packet.ok_or_else(|| conn.status().err().unwrap())?;
 
         let mut de = Deserializer::new(Cursor::new(packet.data));
+        de.attach_context(context.clone());
 
         let mut root = Node::new(packet.node, T::default(), context.clone());
         root.set_root(conn.clone());
         
         context.lock().unwrap().insert(packet.node, root.clone());
-        
-        de.attach_context(context.clone());
         
         root.reflect(&mut de).unwrap();
         

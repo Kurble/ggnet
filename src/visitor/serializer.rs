@@ -24,7 +24,7 @@ impl<W: Write> Serializer<W> {
 }
 
 impl<W: Write> Visitor for Serializer<W> {
-    fn visit<T: Reflect<Serializer<W>>>(&mut self, _name: &str, val: &mut T) -> Result<(), SerializeError> {
+    fn visit<T: Reflect<Serializer<W>>>(&mut self, _name: &str, val: &mut T) -> Result<(), Error> {
         Ok(val.reflect(self)?)
     }
 }
@@ -32,7 +32,7 @@ impl<W: Write> Visitor for Serializer<W> {
 macro_rules! encodable {
     ($t:ty) => (
         impl<W: Write> Reflect<Serializer<W>> for $t {
-            fn reflect(&mut self, visit: &mut Serializer<W>) -> Result<(), SerializeError> {
+            fn reflect(&mut self, visit: &mut Serializer<W>) -> Result<(), Error> {
                 Ok(encode(&mut visit.writer, self)?)
             }
         }
@@ -56,7 +56,7 @@ impl<W, T> Reflect<Serializer<W>> for Vec<T> where
     W: Write,
     T: Reflect<Serializer<W>>,
 {
-    fn reflect(&mut self, visit: &mut Serializer<W>) -> Result<(), SerializeError> {
+    fn reflect(&mut self, visit: &mut Serializer<W>) -> Result<(), Error> {
         (self.len() as u32).reflect(visit)?;
         for e in self.iter_mut() {
             e.reflect(visit)?;
@@ -70,7 +70,7 @@ impl<W, K, V> Reflect<Serializer<W>> for HashMap<K, V> where
     K: Reflect<Serializer<W>> + Eq + Hash + Clone,
     V: Reflect<Serializer<W>>,
 {
-    fn reflect(&mut self, visit: &mut Serializer<W>) -> Result<(), SerializeError> {
+    fn reflect(&mut self, visit: &mut Serializer<W>) -> Result<(), Error> {
         (self.len() as u32).reflect(visit)?;
         for (k, v) in self.iter_mut() {
             k.clone().reflect(visit)?;
