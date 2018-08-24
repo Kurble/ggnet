@@ -37,6 +37,7 @@ pub trait NodeBase<T: Tag>: Any {
     fn as_box(&self) -> Box<NodeBase<T>>;
     fn as_any(&self) -> &Any;
     fn id(&self) -> u32;
+    fn context(&self) -> Arc<Mutex<NodeContext<T>>>;
     fn send(&self, BufferSerializer);
     fn recv_rpc<'a>(&mut self, BufferDeserializer);
     fn recv_update<'a>(&mut self, BufferDeserializer);
@@ -53,6 +54,7 @@ pub trait NewNode<T: CallUpdate + CallRPC + Default + Any + Reflect<Refresher>, 
 
 pub struct NodeContext<T: Tag> {
     nodes: HashMap<u32, Box<NodeBase<T>>>,
+    next: u32,
 }
 
 struct NodeInner {
@@ -276,6 +278,15 @@ impl<T, G> Node<T, G> where
         BorrowMut { x: self.val.lock().unwrap() }
     }
 
+    /// Convert node to a different tag. This must be explicit so there is no `Into` implementation.
+    /// Will panic if the tags do not actually match.
+    pub fn convert<X: Tag>(self) -> Node<T, X> {
+        let result: Box<Node<T, X>> = (Box::new(self) as Box<Any>)
+            .downcast()
+            .expect("called convert on Node<T,G> with wrong tag");
+        *result
+    }
+
     fn inner_clone(&self) -> Box<Node<T, G>> {
         Box::new(Node {
             owner: None,
@@ -305,6 +316,8 @@ impl<T, G> NodeBase<G> for WeakNode<T, G> where
 
     fn id(&self) -> u32 { self.id }
 
+    fn context(&self) -> Arc<Mutex<NodeContext<G>>> { self.context.clone().unwrap() }
+
     fn send(&self, _: BufferSerializer) { unimplemented!(); }
 
     fn recv_rpc<'a>(&mut self, msg: BufferDeserializer) { self.as_box().recv_rpc(msg); }
@@ -329,6 +342,8 @@ impl<T, G> NodeBase<G> for Node<T, G> where
     }
 
     fn id(&self) -> u32 { self.id }
+
+    fn context(&self) -> Arc<Mutex<NodeContext<G>>> { self.context.clone().unwrap() }
 
     fn send(&self, msg: BufferSerializer) {
         let mut inner = self.inner.lock().unwrap();
@@ -425,7 +440,27 @@ impl<G: Tag> NodeContext<G> {
     pub fn new() -> NodeContext<G> {
         Self {
             nodes: HashMap::new(),
+            next: 1,
         }
+    } 
+
+    pub fn create<T>(context: &Arc<Mutex<Self>>, val: T) -> Node<T, G> where
+        T: 'static + CallUpdate + CallRPC + Default + Any + Reflect<Refresher>
+    {
+        let cloned = context.clone();
+        let mut context = context.lock().unwrap();
+        let id = context.next;
+        let node = Node::new(id, val, cloned);
+
+        context.nodes.insert(id, Box::new(WeakNode {
+            id: node.id.clone(),
+            context: node.context.clone(),
+            inner: Arc::downgrade(&node.inner),
+            val: Arc::downgrade(&node.val),
+        }));
+        context.next += 1;
+
+        node
     }
 
     pub fn get(&self, id: u32) -> Option<Box<NodeBase<G>>> {

@@ -83,12 +83,12 @@ macro_rules! rpc {
         }
 
         impl<$($bound : $bound_ty),*> CallRPC for $self {
-            fn call_rpc(node: &mut Any, mut msg: Deserializer<Cursor<Vec<u8>>>) {
+            fn call_rpc(node: &mut ::std::any::Any, mut msg: Deserializer<::std::io::Cursor<::std::vec::Vec<u8>>>) {
                 let mut rpc_id = String::default();
                 rpc_id.reflect(&mut msg).unwrap();
                 $(if rpc_id == stringify!($fn_name) {
                     // decode function arguments
-                    $(let mut $arg: $arg_ty = Default::default(); $arg.reflect(&mut msg).unwrap();)*
+                    $(let mut $arg: $arg_ty = ::std::default::Default::default(); $arg.reflect(&mut msg).unwrap();)*
                     // evaluate function body
                     node.downcast_mut::<Node<$self, TagServer>>().unwrap().$fn_name($($arg),*);
                 } else)* {

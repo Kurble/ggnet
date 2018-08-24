@@ -2,7 +2,8 @@ use super::*;
 use std::io::Cursor;
 use std::collections::HashMap;
 use std::any::Any;
-use node::{BufferSerializer, BufferDeserializer, NodeBase};
+use node::{BufferSerializer, BufferDeserializer, NodeBase, NodeContext};
+use visitor::refresher::Refresher;
 
 #[derive(Clone, Copy, PartialEq, Eq, Reflect)]
 pub enum UpdateOp {
@@ -157,6 +158,15 @@ pub trait NodeServerExt:
     Reflect<Serializer<Vec<u8>>> +
     Reflect<Updater<Serializer<Vec<u8>>>>
 {
+    /// Create a new `Node` managed by this node's `Server`. 
+    /// The `Server` will assign an id and keep a weak reference to it for future lookup.
+    fn make_node<T, G>(&mut self, content: T) -> Node<T, G> where
+        T: 'static + CallUpdate + CallRPC + Default + Any + Reflect<Refresher>,
+        G: Tag
+    {
+        NodeContext::<TagServer>::create(&self.context(), content).convert()
+    }
+
     /// Update all members.
     fn resync(&mut self) {
         let mut op = UpdateOp::Replace;

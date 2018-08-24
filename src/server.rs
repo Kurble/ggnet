@@ -68,12 +68,7 @@ impl Server {
     pub fn make_node<T>(&mut self, content: T) -> Node<T, TagServer> where
         T: 'static + CallUpdate + CallRPC + Default + Any + Reflect<Refresher>
     {
-        let node = Node::new(self.next_node_id, content, self.context.clone());
-
-        self.context.lock().unwrap().insert(self.next_node_id, node.clone());
-        self.next_node_id += 1;
-
-        node
+        NodeContext::<TagServer>::create(&self.context, content)
     }
 
     /// Updates the `Server`. Processes received messages from the managed connections and 
