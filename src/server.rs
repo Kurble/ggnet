@@ -11,7 +11,6 @@ pub struct Server {
     context: Arc<Mutex<NodeContext<TagServer>>>,
     clients: Vec<(Connection, Box<NodeBase<TagServer>>)>,
     next_connection_id: usize,
-    next_node_id: u32,
 }
 
 /// A managed connection to a `Server`. Does not manage sockets, 
@@ -31,7 +30,6 @@ impl Server {
             context: Arc::new(Mutex::new(NodeContext::new())),
             clients: Vec::new(),
             next_connection_id: 1,
-            next_node_id: 1,
         }
     }
 

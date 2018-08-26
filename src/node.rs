@@ -346,8 +346,7 @@ impl<T, G> NodeBase<G> for Node<T, G> where
     fn context(&self) -> Arc<Mutex<NodeContext<G>>> { self.context.clone().unwrap() }
 
     fn send(&self, msg: BufferSerializer) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.changed = true;
+        let inner = self.inner.lock().unwrap();
         for conn in inner.conns.iter() {
             conn.send(self.id, msg.writer.as_slice());
         }
