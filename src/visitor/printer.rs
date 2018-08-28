@@ -7,9 +7,10 @@ pub struct Printer {
 
 impl Visitor for Printer {
     fn visit<T: Reflect<Printer>>(&mut self, name: &str, val: &mut T) -> Result<(), Error> {
-        self.indent.push_str("\t");
+        self.indent.push_str("  ");
         self.result.push_str(&format!("{} {{\n{}", name, self.indent));
         val.reflect(self)?;
+        self.indent.pop();
         self.indent.pop();
         self.result.push_str(&format!("\n{}}}\n{}", self.indent, self.indent));
         Ok(())
@@ -42,10 +43,27 @@ encodable!{ String }
 
 impl<T: Reflect<Printer>> Reflect<Printer> for Vec<T> {
     fn reflect(&mut self, visit: &mut Printer) -> Result<(), Error> {
-        (self.len() as u32).reflect(visit)?;
+        visit.result.push_str("vec![ ");
         for e in self.iter_mut() {
             e.reflect(visit)?;
+            visit.result.push_str(",");
         }
+        visit.result.push_str(" ]");
+        Ok(())
+    }
+}
+
+impl<K: Reflect<Printer> + Eq + Hash + Clone, V: Reflect<Printer>> Reflect<Printer> for HashMap<K, V> {
+    fn reflect(&mut self, visit: &mut Printer) -> Result<(), Error> {
+        visit.result.push_str("map![ ");
+        for (k, v) in self.iter_mut() {
+            visit.result.push_str("(");
+            let mut kc: K = k.clone();
+            kc.reflect(visit)?;
+            v.reflect(visit)?;
+            visit.result.push_str("),");
+        }
+        visit.result.push_str(" ]");
         Ok(())
     }
 }

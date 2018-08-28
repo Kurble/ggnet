@@ -17,7 +17,7 @@ use visitor::encode::{encode, decode};
 
 pub use visitor::serializer::Serializer;
 pub use visitor::deserializer::Deserializer;
-pub use visitor::updater::NodeServerExt;
+pub use visitor::printer::Printer;
 pub use node::{NodeBase, Node, Tag, TagServer, TagClient};
 pub use rpc::*;
 pub use connection::*;

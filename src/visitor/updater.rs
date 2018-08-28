@@ -2,10 +2,9 @@ use super::*;
 use std::io::Cursor;
 use std::collections::HashMap;
 use std::any::Any;
-use node::{BufferSerializer, BufferDeserializer, NodeBase, NodeContext};
-use visitor::refresher::Refresher;
+use node::{BufferDeserializer, NodeContext};
 
-#[derive(Clone, Copy, PartialEq, Eq, Reflect)]
+#[derive(Clone, Copy, PartialEq, Eq, Reflect, Debug)]
 pub enum UpdateOp {
     Replace,
     Update,
@@ -25,15 +24,15 @@ impl Default for UpdateOp {
 }
 
 pub struct Updater<V> {
-    ser: V,
-    tag: String,
-    op: UpdateOp,
-    found: u32,
-    nest: u32,
-    key: Option<Box<Any>>,
-    val: Option<Box<Any>>,
-
+    pub ser: V,
+    pub tag: String,
+    pub op: UpdateOp,
+    pub found: u32,
+    pub nest: u32,
+    pub key: Option<Box<Any>>,
+    pub val: Option<Box<Any>>,
     pub current_node: u32,
+    pub context: Option<Box<Any>>,
 }
 
 impl<U: Visitor> Updater<U> {
@@ -47,6 +46,7 @@ impl<U: Visitor> Updater<U> {
             key: None,
             val: None,
             current_node: node,
+            context: None,
         }
     }
     pub fn new_update(node: u32, ser: U, tag: String) -> Self {
@@ -59,6 +59,7 @@ impl<U: Visitor> Updater<U> {
             key: None,
             val: None,
             current_node: node,
+            context: None,
         }
     }
     pub fn new_vec_push<V: Any>(node: u32, ser: U, tag: String, val: V) -> Self {
@@ -71,6 +72,7 @@ impl<U: Visitor> Updater<U> {
             key: None,
             val: Some(Box::new(val)),
             current_node: node,
+            context: None,
         }
     }
     pub fn new_vec_insert<V: Any>(node: u32, ser: U, tag: String, index: u32, val: V) -> Self {
@@ -83,6 +85,7 @@ impl<U: Visitor> Updater<U> {
             key: Some(Box::new(index)),
             val: Some(Box::new(val)),
             current_node: node,
+            context: None,
         }
     }
     pub fn new_vec_remove(node: u32, ser: U, tag: String, index: u32) -> Self {
@@ -95,6 +98,7 @@ impl<U: Visitor> Updater<U> {
             key: Some(Box::new(index)),
             val: None,
             current_node: node,
+            context: None,
         }
     }
     pub fn new_vec_clear(node: u32, ser: U, tag: String) -> Self {
@@ -107,6 +111,7 @@ impl<U: Visitor> Updater<U> {
             key: None,
             val: None,
             current_node: node,
+            context: None,
         }
     }
     pub fn new_map_insert<K: Any, V: Any>(node: u32, ser: U, tag: String, key: K, val: V) -> Self {
@@ -119,6 +124,7 @@ impl<U: Visitor> Updater<U> {
             key: Some(Box::new(key)),
             val: Some(Box::new(val)),
             current_node: node,
+            context: None,
         }
     }
     pub fn new_map_remove<K: Any>(node: u32, ser: U, tag: String, index: K) -> Self {
@@ -131,6 +137,7 @@ impl<U: Visitor> Updater<U> {
             key: Some(Box::new(index)),
             val: None,
             current_node: node,
+            context: None,
         }
     }
     pub fn new_map_clear(node: u32, ser: U, tag: String) -> Self {
@@ -143,167 +150,43 @@ impl<U: Visitor> Updater<U> {
             key: None,
             val: None,
             current_node: node,
+            context: None,
         }
     }
     pub fn unwrap(self) -> U {
         self.ser
     }
-}
 
-/// This trait exposes functions that can be used to notify clients op updates to the data model of
-///  a `Node`. The update messages generated will be sent to all connections that hold a reference
-///  to the `Node`.
-pub trait NodeServerExt: 
-    NodeBase<TagServer> + 
-    Reflect<Serializer<Vec<u8>>> +
-    Reflect<Updater<Serializer<Vec<u8>>>>
-{
-    /// Create a new `Node` managed by this node's `Server`. 
-    /// The `Server` will assign an id and keep a weak reference to it for future lookup.
-    fn make_node<T, G>(&mut self, content: T) -> Node<T, G> where
-        T: 'static + CallUpdate + CallRPC + Default + Any + Reflect<Refresher>,
-        G: Tag
-    {
-        NodeContext::<TagServer>::create(&self.context(), content).convert()
+    pub fn attach_context<G: Tag>(&mut self, context: Arc<Mutex<NodeContext<G>>>) {
+        self.context = Some(Box::new(context));
     }
 
-    /// Update all members.
-    fn resync(&mut self) {
-        let mut op = UpdateOp::Replace;
-        let mut ser = BufferSerializer::with_current_node(vec![], self.id());
-
-        op.reflect(&mut ser).unwrap();
-        String::default().reflect(&mut ser).unwrap();
-        let mut updater = Updater::new_replace(self.id(), ser);
-        self.reflect(&mut updater).unwrap();
-        self.send(updater.unwrap());
+    pub fn context<G: Tag>(&self) -> Arc<Mutex<NodeContext<G>>> {
+        self.context
+            .as_ref().unwrap()
+            .downcast_ref::<Arc<Mutex<NodeContext<G>>>>().unwrap()
+            .clone()
     }
-
-    /// Update a single member with name `tag`.
-    fn member_modified(&mut self, mut tag: String) {
-        let mut op = UpdateOp::Update;
-        let mut ser = BufferSerializer::with_current_node(vec![], self.id());
-
-        op.reflect(&mut ser).unwrap();
-        tag.reflect(&mut ser).unwrap();
-        let mut updater = Updater::new_update(self.id(), ser, tag);
-        self.reflect(&mut updater).unwrap();
-        self.send(updater.unwrap());
-    }
-
-    /// Push a new element to the `Vec<T>` member with name `tag`.
-    fn member_vec_push<T>(&mut self, mut tag: String, val: T) where
-        T: Reflect<Serializer<Vec<u8>>> + Any
-    {
-        let mut op = UpdateOp::VecPush;
-        let mut ser = BufferSerializer::with_current_node(vec![], self.id());
-
-        op.reflect(&mut ser).unwrap();
-        tag.reflect(&mut ser).unwrap();
-        let mut updater = Updater::new_vec_push(self.id(), ser, tag, val);
-        self.reflect(&mut updater).unwrap();
-        self.send(updater.unwrap());
-    }
-
-    /// Insert a new element to the `Vec<T>` member with name `tag` at position `index`.
-    fn member_vec_insert<T>(&mut self, mut tag: String, index: usize, val: T) where
-        T: Reflect<Serializer<Vec<u8>>> + Any
-    {
-        let mut op = UpdateOp::VecInsert;
-        let mut ser = BufferSerializer::with_current_node(vec![], self.id());
-
-        op.reflect(&mut ser).unwrap();
-        tag.reflect(&mut ser).unwrap();
-        let mut updater = Updater::new_vec_insert(self.id(), ser, tag, index as u32, val);
-        self.reflect(&mut updater).unwrap();
-        self.send(updater.unwrap());
-    }
-
-    /// Remove an element from the `Vec<T>` member with name `tag` at position `index`.
-    fn member_vec_remove(&mut self, mut tag: String, index: usize) {
-        let mut op = UpdateOp::VecRemove;
-        let mut ser = BufferSerializer::with_current_node(vec![], self.id());
-    
-        op.reflect(&mut ser).unwrap();
-        tag.reflect(&mut ser).unwrap();
-        let mut updater = Updater::new_vec_remove(self.id(), ser, tag, index as u32);
-        self.reflect(&mut updater).unwrap();
-        self.send(updater.unwrap());
-    }
-
-    /// Clear the `Vec<T>` member with name `tag`.
-    fn member_vec_clear(&mut self, mut tag: String) {
-        let mut op = UpdateOp::VecClear;
-        let mut ser = BufferSerializer::with_current_node(vec![], self.id());
-
-        op.reflect(&mut ser).unwrap();
-        tag.reflect(&mut ser).unwrap();
-        let mut updater = Updater::new_vec_clear(self.id(), ser, tag);
-        self.reflect(&mut updater).unwrap();
-        self.send(updater.unwrap());
-    }
-
-    /// Insert a new element to the `HashMap<K,V>` member with name `tag`.
-    fn member_map_insert<K, V>(&mut self, mut tag: String, key: K, val: V) where 
-        K: Reflect<Serializer<Vec<u8>>> + Eq + Hash + Clone + Any,
-        V: Reflect<Serializer<Vec<u8>>> + Any
-    {
-        let mut op = UpdateOp::MapInsert;
-        let mut ser = BufferSerializer::with_current_node(vec![], self.id());
-
-        op.reflect(&mut ser).unwrap();
-        tag.reflect(&mut ser).unwrap();
-        let mut updater = Updater::new_map_insert(self.id(), ser, tag, key, val);
-        self.reflect(&mut updater).unwrap();
-        self.send(updater.unwrap());
-    }
-
-    /// Remove an element from the `Vec<T>` member with name `tag` with key `key`.
-    fn member_map_remove<K>(&mut self, mut tag: String, key: K) where
-        K: Reflect<Serializer<Vec<u8>>> + Eq + Hash + Clone + Any
-    {
-        let mut op = UpdateOp::MapRemove;
-        let mut ser = BufferSerializer::with_current_node(vec![], self.id());
-        
-        op.reflect(&mut ser).unwrap();
-        tag.reflect(&mut ser).unwrap();
-        let mut updater = Updater::new_map_remove(self.id(), ser, tag, key);
-        self.reflect(&mut updater).unwrap();
-        self.send(updater.unwrap());
-    }
-
-    /// Clear the `HashMap<K,V>` member with name `tag`.
-    fn member_map_clear(&mut self, mut tag: String) {
-        let mut op = UpdateOp::MapClear;
-        let mut ser = BufferSerializer::with_current_node(vec![], self.id());
-
-        op.reflect(&mut ser).unwrap();
-        tag.reflect(&mut ser).unwrap();
-        let mut updater = Updater::new_map_clear(self.id(), ser, tag);
-        self.reflect(&mut updater).unwrap();
-        self.send(updater.unwrap());
-    }
-}
-
-impl<T> NodeServerExt for T where
-    T: NodeBase<TagServer> + Reflect<Serializer<Vec<u8>>> + Reflect<Updater<Serializer<Vec<u8>>>>,
-{ 
 }
 
 pub trait CallUpdate {
-    fn call_upd(&mut self, msg: BufferDeserializer);
+    fn call_upd(&mut self, parent: u32, msg: BufferDeserializer);
 }
 
 impl<T> CallUpdate for T where
     T: Reflect<Deserializer<Cursor<Vec<u8>>>> + 
        Reflect<Updater<Deserializer<Cursor<Vec<u8>>>>>
 {
-    fn call_upd(&mut self, mut msg: BufferDeserializer) {
+    fn call_upd(&mut self, parent: u32, mut msg: BufferDeserializer) {
         let mut op = UpdateOp::default();
         let mut tag = String::default();
 
         op.reflect(&mut msg).unwrap();
         tag.reflect(&mut msg).unwrap();
+
+        println!("update op {:?} on tag {}", op, tag);
+
+        let ctx = msg.context();
 
         let mut upd = Updater {
             ser: msg,
@@ -313,8 +196,11 @@ impl<T> CallUpdate for T where
             nest: 0,
             key: None,
             val: None,
-            current_node: 0,
+            current_node: parent,
+            context: None,
         };
+
+        upd.attach_context::<TagClient>(ctx);
 
         self.reflect(&mut upd).unwrap();
     }
